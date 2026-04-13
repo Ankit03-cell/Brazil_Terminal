@@ -196,7 +196,7 @@ try:
         c1, c2 = st.columns([1, 1])
         with c1: mode = st.selectbox("Trend Mode", ["Generic (F-Only)", "Generic (Continuous)", "Specific Pair"], key=f"m_s_{label}")
         with c2:
-            if "Generic" in mode: rank = st.selectbox("Bucket", [1, 2, 3, 4, 5, 6], index=0, key=f"r_s_{label}")
+            if "Generic" in mode: rank = st.selectbox("Bucket", [1, 2, 3, 4, 5, 6,7,8,9,10,11], index=0, key=f"r_s_{label}")
             else: sel_p = st.selectbox("Pair", snap_curr['Spread Pair'].tolist() if not snap_curr.empty else [], key=f"p_s_{label}")
         
         if "Generic" in mode: 
