@@ -3,7 +3,14 @@ import pandas as pd
 from sqlalchemy import create_engine
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
-from analysis import *
+from analysis import (
+    get_all_calendar_spreads, 
+    get_spreads_on_date, 
+    calculate_generic_history, 
+    get_fly_curve_on_date, 
+    calculate_generic_fly_history, 
+    get_index_history
+)
 
 st.set_page_config(page_title="Terminal", page_icon="🛡️", layout="wide", initial_sidebar_state="expanded")
 
