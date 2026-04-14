@@ -1,0 +1,852 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ARB Terminal | Market Intelligence</title>
+    <meta name="description" content="Professional-grade financial terminal for Brazil DI spread and butterfly analysis.">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>">
+    <link rel="stylesheet" href="/static/styles.css">
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef, createContext, useContext, useMemo } = React;
+
+// ─── API Layer ────────────────────────────────────────────────
+const API = (window.location.protocol === 'file:' || (window.location.hostname === '127.0.0.1' && window.location.port !== '8000'))
+    ? 'http://127.0.0.1:8000/api'
+    : '/api';
+const api = {
+    metadata: () => fetch(`${API}/metadata`).then(r => r.json()),
+    spreads: (tenor, date, showAll) => fetch(`${API}/spreads?tenor=${tenor}&date=${date}&show_all=${showAll}`).then(r => r.json()),
+    spreadsPast: (tenor, date, n1, n2, n3, showAll) => fetch(`${API}/spreads/past?tenor=${tenor}&date=${date}&n1=${n1}&n2=${n2}&n3=${n3}&show_all=${showAll}`).then(r => r.json()),
+    spreadsHistory: (tenor, date, lookback, rank, filter) => fetch(`${API}/spreads/history?tenor=${tenor}&date=${date}&lookback=${lookback}&rank=${rank}&filter=${filter}`).then(r => r.json()),
+    flies: (tenor, date, showAll) => fetch(`${API}/flies?tenor=${tenor}&date=${date}&show_all=${showAll}`).then(r => r.json()),
+    fliesPast: (tenor, date, n1, n2, n3, showAll) => fetch(`${API}/flies/past?tenor=${tenor}&date=${date}&n1=${n1}&n2=${n2}&n3=${n3}&show_all=${showAll}`).then(r => r.json()),
+    fliesHistory: (tenor, date, lookback, rank, filter) => fetch(`${API}/flies/history?tenor=${tenor}&date=${date}&lookback=${lookback}&rank=${rank}&filter=${filter}`).then(r => r.json()),
+    stats: (tenor, date, lookback) => fetch(`${API}/stats?tenor=${tenor}&date=${date}&lookback=${lookback}`).then(r => r.json()),
+    exportUrl: (tenor, date, lookback) => `${API}/export?tenor=${tenor}&date=${date}&lookback=${lookback}`,
+};
+
+// ─── Format Short Name ────────────────────────────────────────
+function formatShortName(name, isSpread = true) {
+    if (!name) return name;
+    if (isSpread) {
+        const parts = name.split('-');
+        if (parts.length === 2) {
+            const m1 = parts[0].match(/OD([A-Z])(\d{2})/);
+            const m2 = parts[1].match(/OD([A-Z])(\d{2})/);
+            if (m1 && m2) {
+                const month = m1[1];
+                const y1Str = m1[2];
+                const y2Str = m2[2];
+                const y1 = parseInt(y1Str, 10);
+                const y2 = parseInt(y2Str, 10);
+                const diff = y2 - y1;
+                const tenorCode = diff === 1 ? '4' : (diff === 2 ? '8' : String(diff));
+                return `DI1${month}${y1Str}${tenorCode}S`;
+            }
+        }
+    } else {
+        const m = name.match(/OD([A-Z])(\d{2}) (\d+)M Fly/);
+        if (m) {
+            const month = m[1];
+            const y1Str = m[2];
+            const tenor = parseInt(m[3], 10);
+            const tenorCode = tenor === 12 ? '4' : (tenor === 24 ? '8' : String(tenor));
+            return `DI1${month}${y1Str}${tenorCode}`;
+        }
+    }
+    return name;
+}
+
+// ─── Theme Context ────────────────────────────────────────────
+const ThemeContext = createContext();
+
+// ─── Dynamic Chart Colors ─────────────────────────────────────
+function useChartTheme() {
+    const { isDark } = useContext(ThemeContext);
+    return useMemo(() => ({
+        paper: 'transparent',
+        plot: isDark ? 'rgba(13,26,45,0.3)' : 'rgba(255,255,255,0.3)',
+        grid: isDark ? 'rgba(255,255,255,0.03)' : 'rgba(0,0,0,0.04)',
+        gridDot: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.06)',
+        text: isDark ? '#8899ab' : '#64748b',
+        spike: isDark ? '#475569' : '#cbd5e1',
+        primary: isDark ? '#00e676' : '#6366f1',
+        primaryFill: isDark ? 'rgba(0,230,118,0.07)' : 'rgba(99,102,241,0.06)',
+        ma1: isDark ? '#60a5fa' : '#0ea5e9',
+        ma2: isDark ? '#fbbf24' : '#f97316',
+        bandFill: isDark ? 'rgba(96,165,250,0.06)' : 'rgba(14,165,233,0.06)',
+        past: isDark ? ['#1e3a5f', '#2d5a80', '#4080a0'] : ['#cbd5e1', '#a3b1c6', '#7b8da4'],
+        positive: isDark ? '#34d399' : '#059669',
+        negative: isDark ? '#f87171' : '#dc2626',
+        overlay: isDark ? '#f59e0b' : '#e11d48',
+        zeroLine: isDark ? '#ef4444' : '#dc2626',
+        font: { family: 'Inter', size: 11 },
+    }), [isDark]);
+}
+
+// ─── Base Layout for all Charts ───────────────────────────────
+function makeLayout(c, overrides = {}) {
+    return {
+        paper_bgcolor: c.paper,
+        plot_bgcolor: c.plot,
+        font: { ...c.font, color: c.text },
+        hovermode: 'x unified',
+        hoverlabel: { bgcolor: 'rgba(15,23,42,0.92)', bordercolor: 'transparent', font: { family: 'Inter', size: 12, color: '#f1f5f9' } },
+        margin: { l: 50, r: 20, t: 10, b: 70 },
+        showlegend: true,
+        legend: { orientation: 'h', yanchor: 'bottom', y: 1.02, xanchor: 'right', x: 1, font: { size: 11, color: c.text }, bgcolor: 'rgba(0,0,0,0)' },
+        xaxis: { showgrid: false, linecolor: 'transparent', tickfont: { color: c.text, size: 12 }, showspikes: true, spikecolor: c.spike, spikethickness: 0.5, spikemode: 'across', spikesnap: 'cursor' },
+        yaxis: { showgrid: true, gridcolor: c.grid, griddash: 'dot', gridwidth: 1, tickfont: { color: c.text, size: 11 }, showspikes: true, spikecolor: c.spike, spikethickness: 0.5 },
+        ...overrides,
+    };
+}
+
+// ─── PlotlyChart Component ───────────────────────────────────
+function PlotlyChart({ data, layout, style, config }) {
+    const ref = useRef(null);
+    const { isDark } = useContext(ThemeContext);
+    const c = useChartTheme();
+
+    useEffect(() => {
+        if (!ref.current || !data) return;
+        const finalLayout = makeLayout(c, layout);
+        const finalConfig = { responsive: true, displayModeBar: false, ...config };
+        Plotly.react(ref.current, data, finalLayout, finalConfig);
+    }, [data, layout, isDark]);
+
+    return <div ref={ref} style={{ width: '100%', borderRadius: 12, overflow: 'hidden', ...style }} />;
+}
+
+// ─── MetricCard Component ─────────────────────────────────────
+function MetricCard({ label, value, delta, prefix = '', className = '' }) {
+    const isPos = delta >= 0;
+    return (
+        <div className={`metric-card ${className}`}>
+            <div className="label">{label}</div>
+            <div className="value">{prefix}{typeof value === 'number' ? value.toFixed(1) : value}</div>
+            {delta !== undefined && (
+                <div className={`delta ${isPos ? 'positive' : 'negative'}`}>
+                    {isPos ? '▲' : '▼'} {Math.abs(delta).toFixed(2)} bps
+                </div>
+            )}
+        </div>
+    );
+}
+
+// ─── Info Panel (inline chart explanation) ────────────────────
+function InfoPanel({ text, visible }) {
+    if (!visible) return null;
+    return (
+        <div className="info-panel">
+            <p dangerouslySetInnerHTML={{ __html: text }} />
+        </div>
+    );
+}
+
+// ─── DataTable Component ──────────────────────────────────────
+function DataTable({ data, columns, title }) {
+    const [sortCol, setSortCol] = useState(null);
+    const [sortDir, setSortDir] = useState('asc');
+    const [expanded, setExpanded] = useState(false);
+
+    const handleSort = (col) => {
+        if (sortCol === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+        else { setSortCol(col); setSortDir('asc'); }
+    };
+
+    const sorted = [...data].sort((a, b) => {
+        if (!sortCol) return 0;
+        const va = a[sortCol], vb = b[sortCol];
+        const cmp = typeof va === 'number' ? va - vb : String(va).localeCompare(String(vb));
+        return sortDir === 'asc' ? cmp : -cmp;
+    });
+
+    if (!data.length) return null;
+
+    return (
+        <div style={{ marginTop: 16 }}>
+            <button onClick={() => setExpanded(!expanded)} style={{
+                background: 'transparent', border: 'none', color: 'var(--text-secondary)',
+                cursor: 'pointer', fontFamily: 'Inter', fontSize: 12, fontWeight: 600,
+                display: 'flex', alignItems: 'center', gap: 6, padding: '6px 0'
+            }}>
+                {expanded ? '▾' : '▸'} {title || 'Data Table'} ({data.length} rows)
+            </button>
+            {expanded && (
+                <div className="data-table-wrapper" style={{ maxHeight: 400, overflowY: 'auto' }}>
+                    <table className="data-table">
+                        <thead>
+                            <tr>
+                                {columns.map(col => (
+                                    <th key={col.key} className={sortCol === col.key ? 'sorted' : ''} onClick={() => handleSort(col.key)}>
+                                        {col.label} <span className="sort-icon">{sortCol === col.key ? (sortDir === 'asc' ? '▲' : '▼') : '⇅'}</span>
+                                    </th>
+                                ))}
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {sorted.map((row, i) => (
+                                <tr key={i}>
+                                    {columns.map(col => (
+                                        <td key={col.key} className={col.color ? (row[col.key] >= 0 ? 'val-positive' : 'val-negative') : ''}>
+                                            {col.format ? col.format(row[col.key]) : row[col.key]}
+                                        </td>
+                                    ))}
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            )}
+        </div>
+    );
+}
+
+// ─── SpreadStation Component ──────────────────────────────────
+function SpreadStation({ tenor, params }) {
+    const [spreads, setSpreads] = useState(null);
+    const [past, setPast] = useState(null);
+    const [history, setHistory] = useState(null);
+    const [stats, setStats] = useState(null);
+    const [showAll, setShowAll] = useState(false);
+    const [histMode, setHistMode] = useState('F');
+    const [histRank, setHistRank] = useState(1);
+    const [loading, setLoading] = useState(true);
+    const [showCurveInfo, setShowCurveInfo] = useState(false);
+    const [showHistInfo, setShowHistInfo] = useState(false);
+    const c = useChartTheme();
+
+    const load = useCallback(async () => {
+        setLoading(true);
+        try {
+            const [s, p, h, st] = await Promise.all([
+                api.spreads(tenor, params.date, showAll),
+                api.spreadsPast(tenor, params.date, params.n1, params.n2, params.n3, showAll),
+                api.spreadsHistory(tenor, params.date, params.lookback, histRank, histMode),
+                api.stats(tenor, params.date, params.lookback),
+            ]);
+            setSpreads(s); setPast(p); setHistory(h); setStats(st);
+        } catch (e) { console.error(e); }
+        setLoading(false);
+    }, [tenor, params.date, params.lookback, params.n1, params.n2, params.n3, showAll, histMode, histRank]);
+
+    useEffect(() => { load(); }, [load]);
+
+    if (loading) return <div className="loading-overlay"><div className="spinner" /> Loading spread data...</div>;
+    if (!spreads?.data?.length) return <div className="loading-overlay">No data available for this date.</div>;
+
+    // Curve traces
+    const curveTraces = [];
+    const validPairs = new Set(spreads.data.map(d => d.pair));
+    const pastEntries = past ? Object.entries(past) : [];
+    pastEntries.forEach(([key, val], i) => {
+        if (val.data?.length) {
+            const filtered = val.data.filter(d => validPairs.has(d.pair));
+            curveTraces.push({
+                x: filtered.map(d => formatShortName(d.pair, true)), y: filtered.map(d => d.value),
+                name: val.date, mode: 'lines',
+                line: { color: c.past[i % 3], width: 2, shape: 'spline', smoothing: 0.8 },
+                hovertemplate: '<b>%{x}</b><br>%{y:.2f} bps<extra></extra>'
+            });
+        }
+    });
+    curveTraces.push({
+        x: spreads.data.map(d => formatShortName(d.pair, true)), y: spreads.data.map(d => d.value),
+        name: 'Today', mode: 'lines+markers',
+        line: { color: c.primary, width: 3, shape: 'spline', smoothing: 0.8 },
+        marker: { size: 7, color: c.primary, line: { width: 2, color: c.plot } },
+        hovertemplate: '<b>%{x}</b><br><b>%{y:.2f} bps</b><extra></extra>'
+    });
+
+    // Change bars
+    const chgTrace = {
+        x: spreads.data.map(d => formatShortName(d.pair, true)), y: spreads.data.map(d => d.chg),
+        type: 'bar', name: 'Change',
+        marker: {
+            color: spreads.data.map(d => d.chg >= 0 ? c.positive : c.negative),
+            line: { width: 0 },
+            cornerradius: 12
+        },
+        hovertemplate: '<b>%{x}</b><br>Chg: %{y:.2f} bps<extra></extra>'
+    };
+
+    // Master Sort Order for X-Axis (strictly identical to Today's active contracts)
+    const masterSpreadCats = spreads.data.map(d => formatShortName(d.pair, true));
+
+    // Metrics
+    const nearest = spreads.data[0]?.value || 0;
+    const maxVal = Math.max(...spreads.data.map(d => d.value));
+    const nearestChg = spreads.data[0]?.chg || 0;
+
+    // History traces
+    const histTraces = [];
+    if (history?.data?.length) {
+        histTraces.push({
+            x: history.data.map(d => d.date), y: history.data.map(d => d.value),
+            name: 'Spread', line: { color: c.primary, width: 2.5, shape: 'spline', smoothing: 0.6 },
+            fill: 'tozeroy', fillcolor: c.primaryFill,
+            hovertemplate: '%{y:.2f} bps<extra></extra>'
+        });
+        if (history.bands?.ma_20) {
+            histTraces.push({ x: history.data.map(d => d.date), y: history.bands.ma_20, name: 'MA-20', line: { color: c.ma1, width: 1.5, dash: 'dot' } });
+        }
+        if (history.bands?.ma_60) {
+            histTraces.push({ x: history.data.map(d => d.date), y: history.bands.ma_60, name: 'MA-60', line: { color: c.ma2, width: 1.5, dash: 'dot' } });
+        }
+        if (history.bands?.upper_20 && history.bands?.lower_20) {
+            histTraces.push({ x: history.data.map(d => d.date), y: history.bands.upper_20, name: '+2σ', line: { color: c.ma1, width: 0.5 }, showlegend: false });
+            histTraces.push({ x: history.data.map(d => d.date), y: history.bands.lower_20, name: '-2σ', line: { color: c.ma1, width: 0.5 }, fill: 'tonexty', fillcolor: c.bandFill, showlegend: false });
+        }
+    }
+    if (history?.index?.length) {
+        histTraces.push({
+            x: history.index.map(d => d.date), y: history.index.map(d => d.value),
+            name: 'Policy Rate', yaxis: 'y2',
+            line: { color: c.overlay, width: 1.5, dash: 'dot' },
+            hovertemplate: 'Rate: %{y:.2f}<extra></extra>'
+        });
+    }
+
+    // Stats table
+    const tableColumns = [
+        { key: 'pair', label: 'Spread Pair', format: v => formatShortName(v, true) },
+        { key: 'value', label: 'Value', format: v => v?.toFixed(2) },
+        { key: 'chg_1d', label: '1D Chg', format: v => v?.toFixed(2), color: true },
+        { key: 'z_score', label: 'Z-Score', format: v => v?.toFixed(2), color: true },
+        { key: 'percentile', label: 'Pctl', format: v => `${v?.toFixed(0)}%` },
+        { key: 'min', label: 'Min', format: v => v?.toFixed(2) },
+        { key: 'max', label: 'Max', format: v => v?.toFixed(2) },
+    ];
+
+    return (
+        <div>
+            <div className="metrics-row">
+                <MetricCard label={`Nearest ${tenor}M`} value={nearest} delta={nearestChg} className="fade-in fade-in-1" />
+                <MetricCard label="Peak Spread" value={maxVal} className="fade-in fade-in-2" />
+                <MetricCard label="Active Nodes" value={spreads.data.length} className="fade-in fade-in-3" />
+                {stats?.data?.[0] && <MetricCard label="Z-Score" value={stats.data[0].z_score} className="fade-in fade-in-4" />}
+            </div>
+
+            <div className="terminal-card fade-in fade-in-2">
+                <div className="card-header">
+                    <div className="card-title"><span className="accent">|</span> {tenor}M SPREAD CURVE</div>
+                    <div className="card-actions">
+                        <button className={`info-btn ${showCurveInfo ? 'active' : ''}`} onClick={() => setShowCurveInfo(!showCurveInfo)} title="Chart Explanation">ⓘ</button>
+                        <label className="toggle-switch">
+                            <input type="checkbox" checked={showAll} onChange={e => setShowAll(e.target.checked)} />
+                            <span className="toggle-track" />
+                            Show All
+                        </label>
+                    </div>
+                </div>
+                <InfoPanel visible={showCurveInfo} text={`
+                    <strong>Spread Curve</strong> shows the current term structure of ${tenor}-month calendar spreads.<br/>
+                    • The <strong>bright line (Today)</strong> shows live spread values across each maturity node.<br/>
+                    • The <strong>muted lines</strong> show where the curve sat n1, n2, and n3 days ago for comparison.<br/>
+                    • <strong>Change bars below</strong> show the daily movement (today vs previous close) at each node — <span style="color:var(--positive)">green = widening</span>, <span style="color:var(--negative)">red = tightening</span>.
+                `} />
+                <PlotlyChart
+                    data={curveTraces}
+                    layout={{ height: 340, xaxis: { tickangle: -45, categoryorder: 'array', categoryarray: masterSpreadCats } }}
+                />
+                <PlotlyChart
+                    data={[chgTrace]}
+                    layout={{
+                        height: 120,
+                        margin: { t: 20, b: 20, l: 50, r: 20 },
+                        yaxis: { zeroline: true, zerolinecolor: c.grid, zerolinewidth: 1, showgrid: false },
+                        xaxis: { showticklabels: false, showgrid: false, categoryorder: 'array', categoryarray: masterSpreadCats },
+                        annotations: [{ text: 'CHANGE VS PREV CLOSE', xref: 'paper', yref: 'paper', x: 0, y: 1.1, showarrow: false, font: { size: 10, color: c.text } }]
+                    }}
+                />
+                <DataTable data={stats?.data || []} columns={tableColumns} title="Spread Analysis Table" />
+            </div>
+
+            <div className="terminal-card fade-in fade-in-3">
+                <div className="card-header">
+                    <div className="card-title"><span className="accent">|</span> HISTORICAL {tenor}M TREND</div>
+                    <div className="card-actions">
+                        <button className={`info-btn ${showHistInfo ? 'active' : ''}`} onClick={() => setShowHistInfo(!showHistInfo)} title="Chart Explanation">ⓘ</button>
+                        <a href={api.exportUrl(tenor, params.date, params.lookback)} className="btn-export">📥 Export</a>
+                    </div>
+                </div>
+                <InfoPanel visible={showHistInfo} text={`
+                    <strong>Historical Trend</strong> shows how the generic (constant-maturity) spread evolved over time.<br/>
+                    • <strong>MA-20</strong> (blue dotted): 20-day moving average — short-term trend direction.<br/>
+                    • <strong>MA-60</strong> (amber dotted): 60-day moving average — medium-term regime.<br/>
+                    • <strong>Bollinger Bands</strong> (shaded area): ±2 standard deviations around MA-20. Price outside the band signals extreme positioning.<br/>
+                    • <strong>Policy Rate</strong> (overlay): Central bank reference rate for macro context.<br/>
+                    • <strong>Filter</strong>: "F-Only" uses January contracts (most liquid). "All" uses every month.<br/>
+                    • <strong>Bucket</strong>: Which position on the curve — 1 = nearest maturity, 2 = second nearest, etc.
+                `} />
+                <div className="controls-row">
+                    <div className="control-group">
+                        <label>Filter</label>
+                        <select value={histMode} onChange={e => setHistMode(e.target.value)}>
+                            <option value="F">F-Only (Jan)</option>
+                            <option value="all">All Months</option>
+                        </select>
+                    </div>
+                    <div className="control-group">
+                        <label>Bucket</label>
+                        <select value={histRank} onChange={e => setHistRank(Number(e.target.value))}>
+                            {[1,2,3,4,5,6].map(r => <option key={r} value={r}>{r}</option>)}
+                        </select>
+                    </div>
+                </div>
+                <PlotlyChart
+                    data={histTraces}
+                    layout={{
+                        height: 380,
+                        yaxis: { title: { text: 'Spread (bps)', font: { size: 11, color: c.text } } },
+                        yaxis2: { title: { text: 'Policy Rate', font: { size: 11, color: c.text } }, overlaying: 'y', side: 'right', showgrid: false, tickfont: { color: c.text, size: 10 } },
+                        xaxis: { rangeslider: { visible: true, thickness: 0.04, bgcolor: c.plot, bordercolor: c.grid } }
+                    }}
+                />
+            </div>
+        </div>
+    );
+}
+
+// ─── FlyStation Component ─────────────────────────────────────
+function FlyStation({ tenor, params }) {
+    const [flies, setFlies] = useState(null);
+    const [past, setPast] = useState(null);
+    const [history, setHistory] = useState(null);
+    const [showAll, setShowAll] = useState(false);
+    const [histMode, setHistMode] = useState('F');
+    const [histRank, setHistRank] = useState(1);
+    const [loading, setLoading] = useState(true);
+    const [showCurveInfo, setShowCurveInfo] = useState(false);
+    const [showHistInfo, setShowHistInfo] = useState(false);
+    const c = useChartTheme();
+
+    const load = useCallback(async () => {
+        setLoading(true);
+        try {
+            const [f, p, h] = await Promise.all([
+                api.flies(tenor, params.date, showAll),
+                api.fliesPast(tenor, params.date, params.n1, params.n2, params.n3, showAll),
+                api.fliesHistory(tenor, params.date, params.lookback, histRank, histMode),
+            ]);
+            setFlies(f); setPast(p); setHistory(h);
+        } catch (e) { console.error(e); }
+        setLoading(false);
+    }, [tenor, params.date, params.lookback, params.n1, params.n2, params.n3, showAll, histMode, histRank]);
+
+    useEffect(() => { load(); }, [load]);
+
+    if (loading) return <div className="loading-overlay"><div className="spinner" /> Loading fly data...</div>;
+    if (!flies?.data?.length) return <div className="loading-overlay">No fly data available.</div>;
+
+    const curveTraces = [];
+    const validFlies = new Set(flies.data.map(d => d.name));
+    const pastEntries = past ? Object.entries(past) : [];
+    pastEntries.forEach(([key, val], i) => {
+        if (val.data?.length) {
+            const filtered = val.data.filter(d => validFlies.has(d.name));
+            curveTraces.push({
+                x: filtered.map(d => formatShortName(d.name, false)), y: filtered.map(d => d.value),
+                name: val.date, mode: 'lines',
+                line: { color: c.past[i % 3], width: 2, shape: 'spline', smoothing: 0.8 },
+                hovertemplate: '<b>%{x}</b><br>%{y:.2f} bps<extra></extra>'
+            });
+        }
+    });
+    curveTraces.push({
+        x: flies.data.map(d => formatShortName(d.name, false)), y: flies.data.map(d => d.value),
+        name: 'Today', mode: 'lines+markers',
+        line: { color: c.primary, width: 3, shape: 'spline', smoothing: 0.8 },
+        marker: { size: 7, color: c.primary, line: { width: 2, color: c.plot } },
+        hovertemplate: '<b>%{x}</b><br><b>%{y:.2f} bps</b><extra></extra>'
+    });
+
+    const chgTrace = {
+        x: flies.data.map(d => formatShortName(d.name, false)), y: flies.data.map(d => d.chg),
+        type: 'bar', name: 'Change',
+        marker: { color: flies.data.map(d => d.chg >= 0 ? c.positive : c.negative), line: { width: 0 }, cornerradius: 12 },
+        hovertemplate: '<b>%{x}</b><br>Chg: %{y:.2f} bps<extra></extra>'
+    };
+
+    // Master Sort Order for X-Axis (strictly identical to Today's active contracts)
+    const masterFlyCats = flies.data.map(d => formatShortName(d.name, false));
+
+    // Compute MA and Bollinger bands on frontend for fly history (for consistency with spread history)
+    function computeBands(values) {
+        const bands = {};
+        if (values.length >= 20) {
+            bands.ma_20 = values.map((_, i) => {
+                if (i < 19) return null;
+                let s = 0; for (let j = i-19; j <= i; j++) s += values[j]; return s/20;
+            });
+            const std20 = values.map((_, i) => {
+                if (i < 19 || !bands.ma_20[i]) return null;
+                let s = 0; for (let j = i-19; j <= i; j++) s += (values[j] - bands.ma_20[i])**2;
+                return Math.sqrt(s/20);
+            });
+            bands.upper_20 = bands.ma_20.map((m, i) => m !== null ? m + 2*std20[i] : null);
+            bands.lower_20 = bands.ma_20.map((m, i) => m !== null ? m - 2*std20[i] : null);
+        }
+        if (values.length >= 60) {
+            bands.ma_60 = values.map((_, i) => {
+                if (i < 59) return null;
+                let s = 0; for (let j = i-59; j <= i; j++) s += values[j]; return s/60;
+            });
+        }
+        return bands;
+    }
+
+    const histTraces = [];
+    if (history?.data?.length) {
+        const flyValues = history.data.map(d => d.value);
+        const flyDates = history.data.map(d => d.date);
+        const bands = computeBands(flyValues);
+
+        histTraces.push({
+            x: flyDates, y: flyValues,
+            name: 'Fly', line: { color: c.primary, width: 2.5, shape: 'spline', smoothing: 0.6 },
+            fill: 'tozeroy', fillcolor: c.primaryFill,
+            hovertemplate: '%{y:.2f} bps<extra></extra>'
+        });
+        if (bands.ma_20) {
+            histTraces.push({ x: flyDates, y: bands.ma_20, name: 'MA-20', line: { color: c.ma1, width: 1.5, dash: 'dot' } });
+        }
+        if (bands.ma_60) {
+            histTraces.push({ x: flyDates, y: bands.ma_60, name: 'MA-60', line: { color: c.ma2, width: 1.5, dash: 'dot' } });
+        }
+        if (bands.upper_20 && bands.lower_20) {
+            histTraces.push({ x: flyDates, y: bands.upper_20, name: '+2σ', line: { color: c.ma1, width: 0.5 }, showlegend: false });
+            histTraces.push({ x: flyDates, y: bands.lower_20, name: '-2σ', line: { color: c.ma1, width: 0.5 }, fill: 'tonexty', fillcolor: c.bandFill, showlegend: false });
+        }
+    }
+    if (history?.index?.length) {
+        histTraces.push({
+            x: history.index.map(d => d.date), y: history.index.map(d => d.value),
+            name: 'Policy Rate', yaxis: 'y2',
+            line: { color: c.overlay, width: 1.5, dash: 'dot' },
+            hovertemplate: 'Rate: %{y:.2f}<extra></extra>'
+        });
+    }
+
+    const currentFly = flies.data[0]?.value || 0;
+    const flyValues = flies.data.map(d => d.value);
+
+    return (
+        <div>
+            <div className="metrics-row">
+                <MetricCard label={`Nearest ${tenor}M Fly`} value={currentFly} delta={flies.data[0]?.chg} className="fade-in fade-in-1" />
+                <MetricCard label="Max Curvature" value={Math.max(...flyValues)} className="fade-in fade-in-2" />
+                <MetricCard label="Min Curvature" value={Math.min(...flyValues)} className="fade-in fade-in-3" />
+                <MetricCard label="Fly Nodes" value={flies.data.length} className="fade-in fade-in-4" />
+            </div>
+
+            <div className="terminal-card fade-in fade-in-2">
+                <div className="card-header">
+                    <div className="card-title"><span className="accent">|</span> {tenor}M FLY CURVE</div>
+                    <div className="card-actions">
+                        <button className={`info-btn ${showCurveInfo ? 'active' : ''}`} onClick={() => setShowCurveInfo(!showCurveInfo)} title="Chart Explanation">ⓘ</button>
+                        <label className="toggle-switch">
+                            <input type="checkbox" checked={showAll} onChange={e => setShowAll(e.target.checked)} />
+                            <span className="toggle-track" />
+                            Show All
+                        </label>
+                    </div>
+                </div>
+                <InfoPanel visible={showCurveInfo} text={`
+                    <strong>Fly (Butterfly) Curve</strong> measures the curvature / convexity of the term structure.<br/>
+                    • <strong>Formula</strong>: Front Spread − Back Spread (symmetrical butterfly).<br/>
+                    • <strong>Above zero</strong>: Normal curvature — the front end is steeper than the back end.<br/>
+                    • <strong>Below zero (red dashed line)</strong>: Inverted curvature — potential regime shift signal.<br/>
+                    • <strong>Historical comparison lines</strong> help identify if curvature is trending or mean-reverting.
+                `} />
+                <PlotlyChart
+                    data={curveTraces}
+                    layout={{
+                        height: 340,
+                        xaxis: { tickangle: -45, categoryorder: 'array', categoryarray: masterFlyCats },
+                        shapes: [{ type: 'line', y0: 0, y1: 0, xref: 'paper', x0: 0, x1: 1, line: { color: c.zeroLine, width: 1, dash: 'dash' } }]
+                    }}
+                />
+                <PlotlyChart
+                    data={[chgTrace]}
+                    layout={{
+                        height: 120,
+                        margin: { t: 20, b: 20, l: 50, r: 20 },
+                        yaxis: { zeroline: true, zerolinecolor: c.grid, showgrid: false },
+                        xaxis: { showticklabels: false, showgrid: false, categoryorder: 'array', categoryarray: masterFlyCats },
+                        annotations: [{ text: 'CHANGE VS PREV CLOSE', xref: 'paper', yref: 'paper', x: 0, y: 1.1, showarrow: false, font: { size: 10, color: c.text } }]
+                    }}
+                />
+            </div>
+
+            <div className="terminal-card fade-in fade-in-3">
+                <div className="card-header">
+                    <div className="card-title"><span className="accent">|</span> HISTORICAL {tenor}M FLY TREND</div>
+                    <div className="card-actions">
+                        <button className={`info-btn ${showHistInfo ? 'active' : ''}`} onClick={() => setShowHistInfo(!showHistInfo)} title="Chart Explanation">ⓘ</button>
+                    </div>
+                </div>
+                <InfoPanel visible={showHistInfo} text={`
+                    <strong>Historical Fly Trend</strong> shows how the generic butterfly value has evolved over the lookback period.<br/>
+                    • The <strong>filled area</strong> represents the fly value over time — sustained moves above/below zero indicate regime changes.<br/>
+                    • <strong>MA-20</strong> (blue dotted): 20-day moving average — short-term curvature trend.<br/>
+                    • <strong>MA-60</strong> (amber dotted): 60-day moving average — medium-term regime.<br/>
+                    • <strong>Bollinger Bands</strong> (shaded): ±2σ around MA-20 — extreme curvature levels.<br/>
+                    • <strong>Policy Rate overlay</strong> provides context: rate hikes often compress front-end spreads, affecting curvature.<br/>
+                    • Use <strong>Bucket</strong> to select which point on the fly curve to track over time.
+                `} />
+                <div className="controls-row">
+                    <div className="control-group">
+                        <label>Filter</label>
+                        <select value={histMode} onChange={e => setHistMode(e.target.value)}>
+                            <option value="F">F-Only (Jan)</option>
+                            <option value="all">All Months</option>
+                        </select>
+                    </div>
+                    <div className="control-group">
+                        <label>Bucket</label>
+                        <select value={histRank} onChange={e => setHistRank(Number(e.target.value))}>
+                            {[1,2,3,4,5,6].map(r => <option key={r} value={r}>{r}</option>)}
+                        </select>
+                    </div>
+                </div>
+                <PlotlyChart
+                    data={histTraces}
+                    layout={{
+                        height: 380,
+                        yaxis: { title: { text: 'Fly (bps)', font: { size: 11, color: c.text } } },
+                        yaxis2: { title: { text: 'Policy Rate', font: { size: 11, color: c.text } }, overlaying: 'y', side: 'right', showgrid: false, tickfont: { color: c.text, size: 10 } },
+                        shapes: [{ type: 'line', y0: 0, y1: 0, xref: 'paper', x0: 0, x1: 1, line: { color: c.zeroLine, width: 1, dash: 'dash' } }],
+                        xaxis: { rangeslider: { visible: true, thickness: 0.04, bgcolor: c.plot, bordercolor: c.grid } }
+                    }}
+                />
+            </div>
+        </div>
+    );
+}
+
+// ─── Guide Tab ────────────────────────────────────────────────
+function GuideTab() {
+    const c = useChartTheme();
+    return (
+        <div className="guide-container fade-in">
+            <div className="guide-section">
+                <h2>📈 Understanding the Spread Charts</h2>
+                <h3>Upper Chart — Spread Curve (Term Structure)</h3>
+                <p>This chart shows the <strong>current</strong> term structure of calendar spreads plotted against maturity. Each point on the curve represents a spread between two DI futures contracts separated by a fixed tenor (12M or 24M).</p>
+                <ul>
+                    <li><strong>Today's Line (bright)</strong>: The current spread values across all active maturity nodes.</li>
+                    <li><strong>Historical Lines (muted)</strong>: Snapshots from n1, n2, n3 days ago. Helps visualize how the curve has shifted over short, medium, and long windows.</li>
+                </ul>
+                <div className="guide-legend">
+                    <div className="guide-legend-item"><span className="swatch" style={{background: c.primary}}></span> Today</div>
+                    <div className="guide-legend-item"><span className="swatch" style={{background: c.past[2]}}></span> n1 days ago</div>
+                    <div className="guide-legend-item"><span className="swatch" style={{background: c.past[1]}}></span> n2 days ago</div>
+                    <div className="guide-legend-item"><span className="swatch" style={{background: c.past[0]}}></span> n3 days ago</div>
+                </div>
+
+                <h3>Change Bars (below curve)</h3>
+                <p>Shows the 1-day change at each node vs the previous business day's close. Quickly identifies where the curve moved the most.</p>
+                <div className="guide-legend">
+                    <div className="guide-legend-item"><span className="swatch" style={{background: c.positive}}></span> Widening (positive change)</div>
+                    <div className="guide-legend-item"><span className="swatch" style={{background: c.negative}}></span> Tightening (negative change)</div>
+                </div>
+
+                <h3>Stats Table</h3>
+                <p>Expanded below the curve chart. For each spread pair, shows: current value, 1-day change, rolling Z-score, percentile rank, and min/max over the lookback window. Sort any column by clicking it.</p>
+                <div className="guide-tip">
+                    <strong>Pro Tip:</strong> Z-scores above +2 or below -2 indicate the spread is at extreme levels relative to recent history — potential mean reversion setups.
+                </div>
+            </div>
+
+            <div className="guide-section">
+                <h2>📊 Understanding the Historical Trend</h2>
+                <h3>Lower Chart — Generic Rolling History</h3>
+                <p>Tracks a single "generic" (constant-maturity) spread over the full lookback period. The generic construction rolls to the Nth available contract daily, maintaining a consistent position on the curve.</p>
+
+                <h3>Overlays Explained</h3>
+                <div className="guide-legend">
+                    <div className="guide-legend-item"><span className="swatch" style={{background: c.primary}}></span> Spread value (filled area)</div>
+                    <div className="guide-legend-item"><span className="swatch dashed" style={{color: c.ma1}}></span> MA-20 (20-day moving average)</div>
+                    <div className="guide-legend-item"><span className="swatch dashed" style={{color: c.ma2}}></span> MA-60 (60-day moving average)</div>
+                    <div className="guide-legend-item"><span className="swatch" style={{background: c.bandFill, border: `1px solid ${c.ma1}`, width: 24, height: 12}}></span> Bollinger Band (±2σ around MA-20)</div>
+                    <div className="guide-legend-item"><span className="swatch dashed" style={{color: c.overlay}}></span> Policy Rate (SELIC target)</div>
+                </div>
+
+                <h3>Controls</h3>
+                <ul>
+                    <li><strong>Filter</strong>: "F-Only" restricts to January (F) contracts which are the most liquid and widely tracked. "All Months" uses every available maturity.</li>
+                    <li><strong>Bucket</strong>: Selects which position on the term structure to track. Bucket 1 = nearest-to-expiry, Bucket 2 = second nearest, etc. Higher buckets capture longer-dated behavior.</li>
+                </ul>
+                <div className="guide-tip">
+                    <strong>Pro Tip:</strong> Use the <strong>range slider</strong> at the bottom of historical charts to zoom into specific date ranges. Drag the handles or click and drag the middle to pan.
+                </div>
+            </div>
+
+            <div className="guide-section">
+                <h2>🦋 Understanding the Fly (Butterfly) Charts</h2>
+                <h3>What is a Butterfly?</h3>
+                <p>A butterfly spread measures the <strong>curvature</strong> of the term structure. It's calculated as: <strong>Front Spread − Back Spread</strong>. This is a symmetrical construction where two adjacent calendar spreads are compared.</p>
+
+                <h3>Upper Chart — Fly Curve</h3>
+                <p>Similar to the spread curve but showing butterfly values. The <strong>red dashed zero line</strong> is the key reference — values above zero indicate normal curvature, values below indicate inversion.</p>
+
+                <h3>Lower Chart — Historical Fly Trend</h3>
+                <p>Tracks the generic butterfly value over time. Persistent moves below zero can signal:</p>
+                <ul>
+                    <li>Upcoming rate cycle turning points</li>
+                    <li>Market stress or positioning extremes</li>
+                    <li>Relative value opportunities when mean-reversion is expected</li>
+                </ul>
+                <div className="guide-tip">
+                    <strong>Pro Tip:</strong> Compare the fly trend with the policy rate overlay. Divergences between curvature and rates often precede major curve repricing events.
+                </div>
+            </div>
+
+            <div className="guide-section">
+                <h2>⚙️ Sidebar Controls Reference</h2>
+                <ul>
+                    <li><strong>Target Date</strong>: The reference date for all analysis. Defaults to the latest date in the database.</li>
+                    <li><strong>Lookback</strong>: Number of calendar days for historical analysis. Preset buttons: 1W (7d), 1M (30d), 3M (90d), 6M (180d), 1Y (365d), 2Y (504d).</li>
+                    <li><strong>n1 / n2 / n3</strong>: Comparison horizons for the curve chart. Default: 5, 21, 63 days (≈ 1 week, 1 month, 3 months).</li>
+                    <li><strong>Show All Nodes</strong>: When off, only "ODF" (January) contract nodes are displayed. When on, all month codes are shown.</li>
+                </ul>
+            </div>
+        </div>
+    );
+}
+
+// ─── Sidebar Component ────────────────────────────────────────
+function Sidebar({ params, setParams, collapsed, setCollapsed }) {
+    const { isDark, toggleTheme } = useContext(ThemeContext);
+    const [meta, setMeta] = useState(null);
+
+    useEffect(() => { api.metadata().then(setMeta); }, []);
+
+    const presets = [
+        { label: '1W', days: 7 }, { label: '1M', days: 30 }, { label: '3M', days: 90 },
+        { label: '6M', days: 180 }, { label: '1Y', days: 365 }, { label: '2Y', days: 504 },
+    ];
+
+    return (
+        <>
+        <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
+            <div className="sidebar-brand">
+                <div className="icon">🛡️</div>
+                <h1>ARB TERMINAL</h1>
+                <p>Market Intelligence</p>
+            </div>
+
+            <div className="sidebar-section">
+                <label>📅 Target Date</label>
+                <input type="date" value={params.date} onChange={e => setParams(p => ({...p, date: e.target.value}))} />
+            </div>
+
+            <div className="sidebar-section">
+                <label>🔍 Lookback (days)</label>
+                <input type="number" value={params.lookback} onChange={e => setParams(p => ({...p, lookback: Number(e.target.value)}))} min="1" />
+                <div className="preset-row">
+                    {presets.map(p => (
+                        <button key={p.label} className={`preset-btn ${params.lookback === p.days ? 'active' : ''}`}
+                            onClick={() => setParams(pr => ({...pr, lookback: p.days}))}>
+                            {p.label}
+                        </button>
+                    ))}
+                </div>
+            </div>
+
+            <div className="sidebar-section">
+                <label>Horizon Windows</label>
+                <div className="sidebar-row">
+                    <div><label>n1</label><input type="number" value={params.n1} onChange={e => setParams(p => ({...p, n1: Number(e.target.value)}))} min="1" /></div>
+                    <div><label>n2</label><input type="number" value={params.n2} onChange={e => setParams(p => ({...p, n2: Number(e.target.value)}))} min="1" /></div>
+                    <div><label>n3</label><input type="number" value={params.n3} onChange={e => setParams(p => ({...p, n3: Number(e.target.value)}))} min="1" /></div>
+                </div>
+            </div>
+
+            {meta && (
+                <div className="db-info">
+                    <div className="db-title">Database Info</div>
+                    <div>
+                        <div>{meta.total_records?.toLocaleString()} records</div>
+                        <div>{meta.total_contracts} contracts</div>
+                        <div>{meta.min_date?.slice(0,10)} → {meta.max_date?.slice(0,10)}</div>
+                    </div>
+                </div>
+            )}
+
+            <div className="theme-toggle">
+                <button onClick={toggleTheme}>
+                    {isDark ? '☀️ Light Mode' : '🌙 Dark Mode'}
+                </button>
+            </div>
+        </aside>
+        <button className="sidebar-toggle" onClick={() => setCollapsed(!collapsed)}>
+            {collapsed ? '☰' : '✕'}
+        </button>
+        </>
+    );
+}
+
+// ─── App Component ────────────────────────────────────────────
+function App() {
+    const [isDark, setIsDark] = useState(true);
+    const [activeTab, setActiveTab] = useState(0);
+    const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+    const [params, setParams] = useState({
+        date: new Date().toISOString().slice(0, 10),
+        lookback: 252, n1: 5, n2: 21, n3: 63,
+    });
+
+    useEffect(() => {
+        api.metadata().then(meta => {
+            if (meta.max_date) setParams(p => ({...p, date: meta.max_date.slice(0, 10)}));
+        });
+    }, []);
+
+    const toggleTheme = () => {
+        setIsDark(!isDark);
+        document.documentElement.setAttribute('data-theme', isDark ? 'light' : 'dark');
+    };
+
+    const tabs = [
+        { label: '📈 12M Spreads', component: <SpreadStation tenor={12} params={params} /> },
+        { label: '📊 24M Spreads', component: <SpreadStation tenor={24} params={params} /> },
+        { label: '🦋 12M Fly', component: <FlyStation tenor={12} params={params} /> },
+        { label: '🦋 24M Fly', component: <FlyStation tenor={24} params={params} /> },
+        { label: '📖 Guide', component: <GuideTab /> },
+    ];
+
+    return (
+        <ThemeContext.Provider value={{ isDark, toggleTheme }}>
+            <div className="app-container">
+                <Sidebar params={params} setParams={setParams} collapsed={sidebarCollapsed} setCollapsed={setSidebarCollapsed} />
+                <main className={`main-content ${sidebarCollapsed ? 'expanded' : ''}`}>
+                    <div className="tab-bar">
+                        {tabs.map((tab, i) => (
+                            <button key={i} className={`tab-btn ${activeTab === i ? 'active' : ''}`} onClick={() => setActiveTab(i)}>
+                                {tab.label}
+                            </button>
+                        ))}
+                    </div>
+                    {tabs[activeTab].component}
+                </main>
+            </div>
+        </ThemeContext.Provider>
+    );
+}
+
+// ─── Mount ────────────────────────────────────────────────────
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
