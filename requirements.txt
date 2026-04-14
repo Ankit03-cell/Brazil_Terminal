@@ -6,3 +6,4 @@ openpyxl
 fastapi
 uvicorn[standard]
 numpy
+gunicorn
