@@ -1,9 +1,0 @@
-services:
-  - type: web
-    name: arb-terminal
-    runtime: python
-    buildCommand: "./render-build.sh"
-    startCommand: "gunicorn backend.api:app -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:$PORT"
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.10.0

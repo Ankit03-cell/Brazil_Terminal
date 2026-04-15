@@ -1,9 +1,0 @@
-pandas
-SQLAlchemy
-plotly
-streamlit
-openpyxl
-fastapi
-uvicorn[standard]
-numpy
-gunicorn

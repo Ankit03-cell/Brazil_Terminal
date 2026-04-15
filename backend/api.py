@@ -1,8 +1,7 @@
-"""
-api.py — FastAPI REST server for ARB Terminal.
-Serves both the API endpoints and the React frontend.
-"""
 import sys, os
+python_dir = os.path.dirname(sys.executable)
+if python_dir not in os.environ['PATH']:
+    os.environ['PATH'] = python_dir + os.pathsep + os.environ['PATH']
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from fastapi import FastAPI, Query
@@ -11,6 +10,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 import pandas as pd
 import io
+from backend.live_monitor_service import LiveMonitorService
 from analysis_engine import (
     load_raw_data, get_all_calendar_spreads, get_spreads_on_date,
     get_previous_date_snapshot, calculate_generic_history,
@@ -20,8 +20,19 @@ from analysis_engine import (
 )
 
 app = FastAPI(title="ARB Terminal API", version="2.0")
+live_monitor_service = LiveMonitorService()
 
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+@app.on_event("startup")
+async def startup_live_monitor():
+    await live_monitor_service.start()
+
+
+@app.on_event("shutdown")
+async def shutdown_live_monitor():
+    await live_monitor_service.stop()
 
 # ─── Load data once at startup ─────────────────────────────────────
 print("[INFO] Loading market data...")
@@ -53,6 +64,11 @@ def _resolve_date(date_str, spreads):
 @app.get("/api/metadata")
 def api_metadata():
     return get_metadata(DF_RAW)
+
+
+@app.get("/api/market-snapshot")
+async def api_market_snapshot():
+    return await live_monitor_service.get_snapshot()
 
 @app.get("/api/spreads")
 def api_spreads(tenor: int = 12, date: str = None, show_all: bool = False):

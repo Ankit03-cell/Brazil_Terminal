@@ -833,6 +833,554 @@ th.sorted .sort-icon { opacity: 1; }
   to { opacity: 1; transform: translateY(0); max-height: 500px; }
 }
 
+/* ─── Curve Monitor ───────────────────────────────────────────── */
+.curve-monitor-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  --monitor-surface: linear-gradient(180deg, rgba(10, 18, 33, 0.96), rgba(7, 13, 25, 0.96));
+  --monitor-surface-strong: linear-gradient(180deg, rgba(7, 13, 25, 0.98), rgba(4, 9, 20, 0.98));
+  --monitor-border: rgba(148, 163, 184, 0.2);
+  --monitor-gridline: rgba(255, 255, 255, 0.05);
+  --monitor-highlight: rgba(var(--accent-rgb), 0.22);
+  --monitor-positive-glow: rgba(52, 211, 153, 0.35);
+  --monitor-negative-glow: rgba(248, 113, 113, 0.32);
+}
+
+.curve-monitor-status {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 20px;
+  padding: 14px 16px;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--monitor-border);
+  background: var(--monitor-surface);
+  box-shadow: var(--shadow-sm);
+  position: relative;
+  overflow: hidden;
+}
+
+.curve-monitor-status::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, rgba(var(--accent-rgb), 0.09) 0%, transparent 40%, transparent 100%);
+  pointer-events: none;
+}
+
+.curve-monitor-status-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.heartbeat-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  position: relative;
+}
+
+.heartbeat-dot.connected {
+  background: var(--positive);
+  box-shadow: 0 0 10px rgba(52, 211, 153, 0.55);
+  animation: heartbeatPulse 1.6s infinite;
+}
+
+.heartbeat-dot.disconnected {
+  background: var(--negative);
+  box-shadow: 0 0 10px rgba(248, 113, 113, 0.45);
+}
+
+.heartbeat-dot::before {
+  content: '';
+  position: absolute;
+  inset: -7px;
+  border-radius: 50%;
+  border: 1px solid transparent;
+}
+
+.heartbeat-dot.connected::before {
+  border-color: rgba(52, 211, 153, 0.45);
+  animation: heartbeatRing 1.6s infinite;
+}
+
+.heartbeat-dot.disconnected::before {
+  border-color: rgba(248, 113, 113, 0.45);
+  opacity: 0.75;
+}
+
+.heartbeat-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-primary);
+}
+
+.heartbeat-meta {
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
+.curve-monitor-status-right {
+  font-size: 12px;
+  color: var(--text-secondary);
+  text-align: right;
+  line-height: 1.6;
+}
+
+.curve-monitor-banner {
+  padding: 10px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(248, 113, 113, 0.35);
+  background: linear-gradient(180deg, rgba(127, 29, 29, 0.34), rgba(69, 10, 10, 0.3));
+  color: #fecaca;
+  font-size: 12px;
+  font-weight: 600;
+  box-shadow: 0 0 0 1px rgba(127, 29, 29, 0.4), 0 8px 24px rgba(127, 29, 29, 0.22);
+}
+
+.curve-monitor-tenor-tabs {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.curve-monitor-tenor-tab {
+  border: 1px solid var(--monitor-border);
+  background: rgba(15, 23, 42, 0.24);
+  color: var(--text-secondary);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.curve-monitor-tenor-tab:hover {
+  border-color: rgba(var(--accent-rgb), 0.45);
+  color: var(--text-primary);
+}
+
+.curve-monitor-tenor-tab.active {
+  background: rgba(var(--accent-rgb), 0.16);
+  border-color: rgba(var(--accent-rgb), 0.5);
+  color: var(--text-accent);
+  box-shadow: 0 0 0 1px rgba(var(--accent-rgb), 0.18);
+}
+
+.curve-monitor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.curve-monitor-charts-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.curve-monitor-chart-card {
+  border: 1px solid var(--monitor-border);
+  border-radius: var(--radius-lg);
+  background: var(--monitor-surface);
+  box-shadow: var(--shadow-sm);
+  padding: 8px 10px 4px;
+}
+
+.curve-monitor-chart-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+  margin: 6px 6px 8px;
+}
+
+.curve-monitor-chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.curve-monitor-expand-btn {
+  border: 1px solid var(--monitor-border);
+  background: rgba(15, 23, 42, 0.25);
+  color: var(--text-secondary);
+  width: 24px;
+  height: 24px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.curve-monitor-expand-btn:hover {
+  color: var(--text-primary);
+  border-color: rgba(var(--accent-rgb), 0.45);
+  background: rgba(var(--accent-rgb), 0.14);
+}
+
+.curve-monitor-chart-click-target {
+  cursor: zoom-in;
+}
+
+.curve-monitor-mini-heading {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: #9bb4cc;
+  margin: 0 6px 4px;
+}
+
+.curve-monitor-live-ribbon {
+  margin: 8px 6px 10px;
+  border: 1px solid var(--monitor-gridline);
+  border-radius: var(--radius-sm);
+  background: rgba(15, 23, 42, 0.2);
+  padding: 10px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.curve-monitor-kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.curve-monitor-kpi span {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+}
+
+.curve-monitor-kpi strong {
+  font-size: 12px;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.curve-monitor-daily-summary {
+  margin: 8px 6px 10px;
+  border: 1px solid var(--monitor-gridline);
+  border-radius: var(--radius-sm);
+  background: rgba(15, 23, 42, 0.18);
+  padding: 10px;
+}
+
+.curve-monitor-summary-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  font-weight: 700;
+}
+
+.curve-monitor-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.curve-monitor-summary-item span {
+  display: block;
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-bottom: 3px;
+}
+
+.curve-monitor-summary-item strong {
+  font-size: 12px;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.curve-monitor-detail-panel {
+  margin: 0 6px 8px;
+  border: 1px solid var(--monitor-gridline);
+  border-radius: var(--radius-sm);
+  background: rgba(15, 23, 42, 0.12);
+  padding: 10px;
+}
+
+.curve-monitor-detail-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+  font-weight: 700;
+}
+
+.curve-monitor-detail-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.curve-monitor-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.72);
+  backdrop-filter: blur(5px);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  animation: monitorModalFadeIn 0.24s ease;
+}
+
+.curve-monitor-modal {
+  width: min(1200px, 96vw);
+  max-height: 92vh;
+  overflow: auto;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--monitor-border);
+  background: var(--monitor-surface-strong);
+  box-shadow: 0 26px 80px rgba(2, 6, 23, 0.55);
+  padding: 14px 16px 16px;
+  animation: monitorModalScaleIn 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.curve-monitor-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.curve-monitor-modal-header h3 {
+  font-size: 13px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.9px;
+  color: var(--text-primary);
+}
+
+.curve-monitor-modal-close {
+  border: 1px solid var(--monitor-border);
+  background: rgba(15, 23, 42, 0.24);
+  color: var(--text-secondary);
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.curve-monitor-modal-close:hover {
+  color: var(--text-primary);
+  border-color: rgba(var(--accent-rgb), 0.45);
+}
+
+.curve-monitor-card {
+  background: var(--monitor-surface-strong);
+  border: 1px solid var(--monitor-border);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+  box-shadow: 0 18px 40px rgba(2, 6, 23, 0.45);
+  position: relative;
+}
+
+.curve-monitor-card::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  border: 1px solid rgba(var(--accent-rgb), 0.08);
+  pointer-events: none;
+}
+
+[data-theme="light"] .curve-monitor-card {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(243, 247, 252, 0.95));
+}
+
+.curve-monitor-card-header h3 {
+  font-size: 12px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: #93c5fd;
+  margin-bottom: 10px;
+}
+
+.curve-monitor-section + .curve-monitor-section {
+  margin-top: 12px;
+}
+
+.curve-monitor-section-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #cbd5e1;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  margin-bottom: 6px;
+  text-shadow: 0 0 14px rgba(59, 130, 246, 0.2);
+}
+
+.curve-monitor-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.curve-monitor-table th {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: #94a3b8;
+  text-align: left;
+  padding: 7px 4px;
+  border-bottom: 1px solid var(--monitor-gridline);
+  font-weight: 700;
+}
+
+.curve-monitor-table td {
+  font-size: 12px;
+  color: #e2e8f0;
+  padding: 7px 4px;
+  border-bottom: 1px solid var(--monitor-gridline);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.curve-monitor-table .live-price-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.curve-monitor-table .positive {
+  color: var(--positive);
+  font-weight: 700;
+}
+
+.curve-monitor-table .negative {
+  color: var(--negative);
+  font-weight: 700;
+}
+
+.curve-monitor-empty {
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.tick-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.tick-icon.up {
+  color: var(--positive);
+  background: var(--positive-bg);
+}
+
+.tick-icon.down {
+  color: var(--negative);
+  background: var(--negative-bg);
+}
+
+.curve-monitor-table tr.tick-up {
+  animation: tickGlowUp 850ms ease-out;
+}
+
+.curve-monitor-table tr.tick-down {
+  animation: tickGlowDown 850ms ease-out;
+}
+
+@keyframes heartbeatPulse {
+  0% { transform: scale(1); box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.45), 0 0 12px rgba(52, 211, 153, 0.5); }
+  35% { transform: scale(1.08); box-shadow: 0 0 0 7px rgba(52, 211, 153, 0.12), 0 0 16px rgba(52, 211, 153, 0.55); }
+  100% { transform: scale(1); box-shadow: 0 0 0 14px rgba(52, 211, 153, 0), 0 0 8px rgba(52, 211, 153, 0.22); }
+}
+
+@keyframes heartbeatRing {
+  0% { transform: scale(0.72); opacity: 0.95; }
+  100% { transform: scale(1.18); opacity: 0; }
+}
+
+@keyframes tickGlowUp {
+  0% { background: var(--monitor-positive-glow); box-shadow: inset 0 0 0 1px rgba(52, 211, 153, 0.45); }
+  45% { background: rgba(52, 211, 153, 0.16); }
+  100% { background: transparent; }
+}
+
+@keyframes tickGlowDown {
+  0% { background: var(--monitor-negative-glow); box-shadow: inset 0 0 0 1px rgba(248, 113, 113, 0.4); }
+  45% { background: rgba(248, 113, 113, 0.14); }
+  100% { background: transparent; }
+}
+
+@keyframes monitorModalFadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes monitorModalScaleIn {
+  from { opacity: 0; transform: scale(0.985) translateY(6px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+[data-theme="light"] .curve-monitor-wrap {
+  --monitor-surface: linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(241, 245, 249, 0.98));
+  --monitor-surface-strong: linear-gradient(180deg, rgba(255, 255, 255, 1), rgba(241, 245, 249, 1));
+  --monitor-border: rgba(100, 116, 139, 0.2);
+  --monitor-gridline: rgba(15, 23, 42, 0.08);
+}
+
+[data-theme="light"] .curve-monitor-tenor-tab {
+  background: rgba(255, 255, 255, 0.72);
+}
+
+[data-theme="light"] .curve-monitor-daily-summary,
+[data-theme="light"] .curve-monitor-detail-panel {
+  background: rgba(255, 255, 255, 0.7);
+}
+[data-theme="light"] .curve-monitor-live-ribbon {
+  background: rgba(255, 255, 255, 0.76);
+}
+[data-theme="light"] .curve-monitor-modal {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 1), rgba(241, 245, 249, 1));
+}
+
+[data-theme="light"] .curve-monitor-section-title {
+  color: #334155;
+  text-shadow: none;
+}
+
+[data-theme="light"] .curve-monitor-table th {
+  color: #64748b;
+}
+
+[data-theme="light"] .curve-monitor-table td {
+  color: #0f172a;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .heartbeat-dot.connected,
+  .heartbeat-dot.connected::before,
+  .curve-monitor-table tr.tick-up,
+  .curve-monitor-table tr.tick-down {
+    animation: none;
+  }
+}
+
 /* ─── Responsive ───────────────────────────────────────────────── */
 @media (max-width: 1200px) {
   .sidebar { width: 240px; min-width: 240px; }
@@ -845,6 +1393,17 @@ th.sorted .sort-icon { opacity: 1; }
   .main-content { padding: 16px; }
   .tab-bar { overflow-x: auto; }
   .metrics-row { grid-template-columns: 1fr 1fr; }
+  .curve-monitor-grid { grid-template-columns: 1fr; }
+  .curve-monitor-charts-grid { grid-template-columns: 1fr; }
+  .curve-monitor-live-ribbon { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .curve-monitor-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .curve-monitor-status {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  .curve-monitor-status-right {
+    text-align: left;
+  }
 }
 
 /* ─── Fade-in animation ───────────────────────────────────────── */

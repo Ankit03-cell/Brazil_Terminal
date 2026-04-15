@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ARB Terminal | Market Intelligence</title>
+    <title>Brazil Dashboard | Market Intelligence</title>
     <meta name="description" content="Professional-grade financial terminal for Brazil DI spread and butterfly analysis.">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛡️</text></svg>">
     <link rel="stylesheet" href="/static/styles.css">
@@ -31,6 +31,7 @@ const api = {
     fliesPast: (tenor, date, n1, n2, n3, showAll) => fetch(`${API}/flies/past?tenor=${tenor}&date=${date}&n1=${n1}&n2=${n2}&n3=${n3}&show_all=${showAll}`).then(r => r.json()),
     fliesHistory: (tenor, date, lookback, rank, filter) => fetch(`${API}/flies/history?tenor=${tenor}&date=${date}&lookback=${lookback}&rank=${rank}&filter=${filter}`).then(r => r.json()),
     stats: (tenor, date, lookback) => fetch(`${API}/stats?tenor=${tenor}&date=${date}&lookback=${lookback}`).then(r => r.json()),
+    marketSnapshot: () => fetch(`${API}/market-snapshot`).then(r => r.json()),
     exportUrl: (tenor, date, lookback) => `${API}/export?tenor=${tenor}&date=${date}&lookback=${lookback}`,
 };
 
@@ -111,7 +112,7 @@ function makeLayout(c, overrides = {}) {
 }
 
 // ─── PlotlyChart Component ───────────────────────────────────
-function PlotlyChart({ data, layout, style, config }) {
+function PlotlyChart({ data, layout, style, config, onPointClick }) {
     const ref = useRef(null);
     const { isDark } = useContext(ThemeContext);
     const c = useChartTheme();
@@ -121,7 +122,32 @@ function PlotlyChart({ data, layout, style, config }) {
         const finalLayout = makeLayout(c, layout);
         const finalConfig = { responsive: true, displayModeBar: false, ...config };
         Plotly.react(ref.current, data, finalLayout, finalConfig);
+        try {
+            Plotly.animate(
+                ref.current,
+                { data, layout: finalLayout },
+                {
+                    transition: { duration: 520, easing: 'cubic-in-out' },
+                    frame: { duration: 520, redraw: false },
+                }
+            );
+        } catch (err) {
+            // Fallback to static render if animation fails.
+        }
     }, [data, layout, isDark]);
+
+    useEffect(() => {
+        if (!ref.current || !onPointClick) return;
+        const handler = (event) => {
+            const point = event?.points?.[0];
+            if (!point) return;
+            onPointClick(point);
+        };
+        ref.current.on('plotly_click', handler);
+        return () => {
+            if (ref.current) ref.current.removeListener('plotly_click', handler);
+        };
+    }, [onPointClick, data, layout, isDark]);
 
     return <div ref={ref} style={{ width: '100%', borderRadius: 12, overflow: 'hidden', ...style }} />;
 }
@@ -725,6 +751,565 @@ function GuideTab() {
     );
 }
 
+function TickArrowIcon({ direction }) {
+    const isUp = direction === 'up';
+    return (
+        <svg
+            viewBox="0 0 24 24"
+            width="12"
+            height="12"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="2"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+        >
+            {isUp ? (
+                <>
+                    <path d="m5 12 7-7 7 7" />
+                    <path d="M12 19V6" />
+                </>
+            ) : (
+                <>
+                    <path d="m19 12-7 7-7-7" />
+                    <path d="M12 5v13" />
+                </>
+            )}
+        </svg>
+    );
+}
+
+// ─── Curve Monitor Tab ─────────────────────────────────────────
+function CurveMonitorTab() {
+    const POLL_INTERVAL_MS = 5000;
+    const TENOR_ORDER = ['3M', '6M', '12M', '24M'];
+    const c = useChartTheme();
+
+    const [snapshot, setSnapshot] = useState(null);
+    const [connected, setConnected] = useState(false);
+    const [loading, setLoading] = useState(true);
+    const [errorMessage, setErrorMessage] = useState('');
+    const [lastSuccessfulFetchAt, setLastSuccessfulFetchAt] = useState(null);
+    const [selectedRows, setSelectedRows] = useState({});
+    const [activeTenor, setActiveTenor] = useState('12M');
+    const [fullscreenChart, setFullscreenChart] = useState(null);
+
+    const normalizeRows = (groupData, section) => {
+        if (!groupData) return [];
+        const direct = groupData[section];
+        if (Array.isArray(direct)) return direct;
+        const directLower = groupData[section.toLowerCase()];
+        if (Array.isArray(directLower)) return directLower;
+        return [];
+    };
+
+    const loadSnapshot = useCallback(async () => {
+        try {
+            const data = await api.marketSnapshot();
+            setSnapshot(data);
+            const isConnected = Boolean(data?.connected);
+            setConnected(isConnected);
+            setErrorMessage(data?.error_message || '');
+            if (isConnected) setLastSuccessfulFetchAt(new Date());
+        } catch (err) {
+            setConnected(false);
+            setErrorMessage(err?.message || 'Unable to fetch live market snapshot.');
+        } finally {
+            setLoading(false);
+        }
+    }, []);
+
+    useEffect(() => {
+        loadSnapshot();
+        const timer = setInterval(loadSnapshot, POLL_INTERVAL_MS);
+        return () => clearInterval(timer);
+    }, [loadSnapshot]);
+
+    const asOfLabel = snapshot?.as_of ? new Date(snapshot.as_of).toLocaleTimeString() : '--';
+    const heartbeatLabel = lastSuccessfulFetchAt ? lastSuccessfulFetchAt.toLocaleTimeString() : '--';
+    const latencyLabel = typeof snapshot?.latency_ms === 'number' ? `${Math.round(snapshot.latency_ms)} ms` : '--';
+
+    const fmt = (value) => typeof value === 'number' ? value.toFixed(2) : '--';
+    const netClass = (value) => typeof value === 'number' ? (value >= 0 ? 'positive' : 'negative') : '';
+    const resolveEffectiveLivePrice = (row) => (
+        typeof row?.live_price === 'number'
+            ? row.live_price
+            : (typeof row?.last_settled === 'number' ? row.last_settled : null)
+    );
+    const resolveChangeVsPrev = (row) => {
+        if (typeof row?.net_change === 'number') return row.net_change;
+        const effectiveLive = resolveEffectiveLivePrice(row);
+        if (typeof effectiveLive === 'number' && typeof row?.last_settled === 'number') {
+            return effectiveLive - row.last_settled;
+        }
+        return null;
+    };
+    const getDailySummary = (rows) => {
+        const numeric = rows
+            .map((row) => resolveChangeVsPrev(row))
+            .filter((value) => typeof value === 'number');
+        if (!numeric.length) {
+            return {
+                count: 0,
+                avg: null,
+                max: null,
+                min: null,
+            };
+        }
+        const values = numeric;
+        return {
+            count: values.length,
+            avg: values.reduce((acc, v) => acc + v, 0) / values.length,
+            max: Math.max(...values),
+            min: Math.min(...values),
+        };
+    };
+    const getLiveSummary = (rows) => {
+        const values = rows
+            .map((row) => resolveEffectiveLivePrice(row))
+            .filter((value) => typeof value === 'number');
+        const upCount = rows.filter((row) => {
+            const chg = resolveChangeVsPrev(row);
+            return typeof chg === 'number' && chg >= 0;
+        }).length;
+        const downCount = rows.filter((row) => {
+            const chg = resolveChangeVsPrev(row);
+            return typeof chg === 'number' && chg < 0;
+        }).length;
+        const tickCount = rows.filter((row) => Boolean(row?.tick_event)).length;
+        if (!values.length) {
+            return {
+                avg: null,
+                min: null,
+                max: null,
+                upCount,
+                downCount,
+                tickCount,
+            };
+        }
+        return {
+            avg: values.reduce((acc, v) => acc + v, 0) / values.length,
+            min: Math.min(...values),
+            max: Math.max(...values),
+            upCount,
+            downCount,
+            tickCount,
+        };
+    };
+    const buildNetChangeChart = (rows, title, key) => {
+        const monitorPalette = {
+            line: '#79acd8',
+            marker: '#8ebce4',
+            markerOutline: '#173b67',
+            text: '#9fc0df',
+            grid: 'rgba(170, 205, 235, 0.12)',
+            gridStrong: 'rgba(170, 205, 235, 0.2)',
+            upBar: '#63c2b6',
+            downBar: '#cb7887',
+        };
+        const normalizedRows = rows
+            .map((row) => {
+                const effectiveLivePrice = resolveEffectiveLivePrice(row);
+                const changeVsPrev = resolveChangeVsPrev(row);
+                return {
+                    ...row,
+                    effective_live_price: effectiveLivePrice,
+                    change_vs_prev: changeVsPrev,
+                };
+            })
+            .filter((row) => typeof row?.effective_live_price === 'number' || typeof row?.change_vs_prev === 'number');
+        const x = normalizedRows.map((row) => row?.name || '--');
+        const chg = normalizedRows.map((row) => (typeof row?.change_vs_prev === 'number' ? row.change_vs_prev : null));
+        const live = normalizedRows.map((row) => (typeof row?.effective_live_price === 'number' ? row.effective_live_price : null));
+        const barColors = chg.map((value) => (typeof value === 'number' && value >= 0 ? monitorPalette.upBar : monitorPalette.downBar));
+        const summary = getDailySummary(rows);
+        const liveSummary = getLiveSummary(rows);
+
+        if (normalizedRows.length === 0) {
+            return {
+                key,
+                title,
+                rows,
+                summary,
+                liveSummary,
+                livePlot: {
+                    data: [],
+                    layout: {
+                        margin: { l: 44, r: 12, t: 20, b: 36 },
+                        xaxis: { visible: false },
+                        yaxis: { visible: false },
+                        showlegend: false,
+                        annotations: [{
+                            text: 'No live rows available',
+                            xref: 'paper',
+                            yref: 'paper',
+                            x: 0.5,
+                            y: 0.5,
+                            showarrow: false,
+                            font: { size: 12, color: c.text },
+                        }],
+                    },
+                },
+                changePlot: {
+                    data: [],
+                    layout: {
+                        margin: { l: 44, r: 12, t: 20, b: 36 },
+                        xaxis: { visible: false },
+                        yaxis: { visible: false },
+                        showlegend: false,
+                        annotations: [{
+                            text: 'No change rows available',
+                            xref: 'paper',
+                            yref: 'paper',
+                            x: 0.5,
+                            y: 0.5,
+                            showarrow: false,
+                            font: { size: 12, color: c.text },
+                        }],
+                    },
+                },
+            };
+        }
+
+        const maxAbs = Math.max(...chg.filter((value) => typeof value === 'number').map((value) => Math.abs(value)), 0);
+        const yPadding = Math.max(0.25, maxAbs * 0.2);
+        const liveValues = live.filter((value) => typeof value === 'number');
+        const liveMin = Math.min(...liveValues);
+        const liveMax = Math.max(...liveValues);
+        const livePad = Math.max(0.2, (liveMax - liveMin) * 0.15);
+        const minLiveIndex = live.findIndex((value) => value === liveMin);
+        const maxLiveIndex = live.findIndex((value) => value === liveMax);
+        const packedRowData = normalizedRows.map((row) => [
+            row?.name,
+            row?.effective_live_price,
+            row?.last_settled,
+            row?.change_vs_prev,
+            row?.tick_event,
+            row?.tick_direction,
+            row?.tick_delta,
+            typeof row?.live_price === 'number',
+        ]);
+
+        return {
+            key,
+            title,
+            rows,
+            summary,
+            liveSummary,
+            livePlot: {
+                data: [{
+                    type: 'scatter',
+                    mode: 'lines+markers',
+                    x,
+                    y: live,
+                    line: { color: monitorPalette.line, width: 2.8, shape: 'spline', smoothing: 0.72 },
+                    marker: {
+                        size: live.map((_, idx) => (idx === minLiveIndex || idx === maxLiveIndex ? 9 : 5)),
+                        color: monitorPalette.marker,
+                        line: { color: monitorPalette.markerOutline, width: 1.6 },
+                    },
+                    customdata: packedRowData,
+                    hovertemplate: '<b>%{x}</b><br>Live Price: <b>%{y:.2f}</b><extra></extra>',
+                }],
+                layout: {
+                    margin: { l: 42, r: 16, t: 8, b: 36 },
+                    showlegend: false,
+                    xaxis: {
+                        tickangle: -24,
+                        automargin: true,
+                        showgrid: true,
+                        gridcolor: monitorPalette.grid,
+                        griddash: 'dot',
+                        gridwidth: 1,
+                        tickfont: { size: 9, color: monitorPalette.text },
+                    },
+                    yaxis: {
+                        range: [liveMin - livePad, liveMax + livePad],
+                        showgrid: true,
+                        gridcolor: monitorPalette.grid,
+                        griddash: 'dot',
+                        zeroline: false,
+                        tickfont: { color: monitorPalette.text, size: 9 },
+                    },
+                    annotations: [
+                        {
+                            x: x[minLiveIndex],
+                            y: live[minLiveIndex],
+                            text: `${live[minLiveIndex] >= 0 ? '+' : ''}${fmt(live[minLiveIndex])} bp`,
+                            showarrow: true,
+                            ax: 0,
+                            ay: 24,
+                            arrowwidth: 1,
+                            arrowcolor: monitorPalette.text,
+                            font: { size: 10, color: monitorPalette.text },
+                        },
+                        {
+                            x: x[maxLiveIndex],
+                            y: live[maxLiveIndex],
+                            text: `${live[maxLiveIndex] >= 0 ? '+' : ''}${fmt(live[maxLiveIndex])} bp`,
+                            showarrow: true,
+                            ax: 0,
+                            ay: -24,
+                            arrowwidth: 1,
+                            arrowcolor: monitorPalette.text,
+                            font: { size: 10, color: monitorPalette.text },
+                        },
+                    ],
+                },
+            },
+            changePlot: {
+                data: [{
+                    type: 'bar',
+                    x,
+                    y: chg,
+                    marker: { color: barColors, line: { color: 'rgba(15, 23, 42, 0.35)', width: 0.5 } },
+                    customdata: packedRowData,
+                    hovertemplate: '<b>%{x}</b><br>Daily Change: <b>%{y:.2f}</b> bps<extra></extra>',
+                }],
+                layout: {
+                    margin: { l: 42, r: 16, t: 8, b: 36 },
+                    showlegend: false,
+                    xaxis: {
+                        tickangle: -24,
+                        automargin: true,
+                        showgrid: true,
+                        gridcolor: monitorPalette.grid,
+                        griddash: 'dot',
+                        tickfont: { size: 9, color: monitorPalette.text },
+                    },
+                    yaxis: {
+                        range: [-(maxAbs + yPadding), maxAbs + yPadding],
+                        zeroline: true,
+                        zerolinecolor: monitorPalette.gridStrong,
+                        zerolinewidth: 1.5,
+                        showgrid: true,
+                        gridcolor: monitorPalette.grid,
+                        griddash: 'dot',
+                        tickfont: { color: monitorPalette.text, size: 9 },
+                    },
+                },
+            },
+        };
+    };
+    const monitorCharts = useMemo(() => {
+        const groupData = snapshot?.groups?.[activeTenor] || snapshot?.groups?.[activeTenor.toLowerCase()] || null;
+        const spreads = normalizeRows(groupData, 'Spreads');
+        const flies = normalizeRows(groupData, 'Flies');
+        return [
+            buildNetChangeChart(spreads, `${activeTenor} Spread Curve`, `${activeTenor}-spreads`),
+            buildNetChangeChart(flies, `${activeTenor} Fly Curve`, `${activeTenor}-flies`),
+        ];
+    }, [snapshot, c, activeTenor]);
+
+    const handleChartClick = useCallback((chartKey, point) => {
+        const raw = point?.customdata;
+        if (!raw || !Array.isArray(raw)) return;
+        const nextRow = {
+            name: raw[0],
+            live_price: raw[1],
+            last_settled: raw[2],
+            net_change: raw[3],
+            tick_event: Boolean(raw[4]),
+            tick_direction: raw[5] || null,
+            tick_delta: raw[6],
+            has_live_price: Boolean(raw[7]),
+        };
+        setSelectedRows((prev) => ({ ...prev, [chartKey]: nextRow }));
+    }, []);
+    const openFullscreen = useCallback((chart) => {
+        setFullscreenChart(chart);
+    }, []);
+    const closeFullscreen = useCallback(() => {
+        setFullscreenChart(null);
+    }, []);
+
+    return (
+        <div className="curve-monitor-wrap">
+            <div className="curve-monitor-status fade-in">
+                <div className="curve-monitor-status-left">
+                    <span className={`heartbeat-dot ${connected ? 'connected' : 'disconnected'}`} />
+                    <div className="heartbeat-copy">
+                        <div className="heartbeat-title">{connected ? 'Live feed healthy' : 'Connection lost'}</div>
+                        <div className="heartbeat-meta">Last success: {heartbeatLabel}</div>
+                    </div>
+                </div>
+                <div className="curve-monitor-status-right">
+                    <div>As of: <strong>{asOfLabel}</strong></div>
+                    <div>Latency: <strong>{latencyLabel}</strong></div>
+                </div>
+            </div>
+
+            {!connected && !loading && (
+                <div className="curve-monitor-banner fade-in">
+                    Connection Lost. {errorMessage || 'Waiting for backend market snapshot service.'}
+                </div>
+            )}
+
+            {loading && (
+                <div className="loading-overlay"><div className="spinner" /> Connecting to market snapshot feed...</div>
+            )}
+
+            {!loading && (
+                <>
+                    <div className="curve-monitor-tenor-tabs">
+                        {TENOR_ORDER.map((tenor) => (
+                            <button
+                                key={tenor}
+                                className={`curve-monitor-tenor-tab ${activeTenor === tenor ? 'active' : ''}`}
+                                onClick={() => setActiveTenor(tenor)}
+                            >
+                                {tenor}
+                            </button>
+                        ))}
+                    </div>
+                    <div className="curve-monitor-charts-grid">
+                        {monitorCharts.map((chart, idx) => (
+                            <div className={`curve-monitor-chart-card fade-in fade-in-${(idx % 4) + 1}`} key={chart.key}>
+                                <div className="curve-monitor-chart-header">
+                                    <div className="curve-monitor-chart-title">{chart.title}</div>
+                                    <button className="curve-monitor-expand-btn" onClick={() => openFullscreen(chart)} title="Open fullscreen chart">
+                                        ↗
+                                    </button>
+                                </div>
+                                <div className="curve-monitor-mini-heading">Live Price</div>
+                                <div className="curve-monitor-chart-click-target" onClick={() => openFullscreen(chart)}>
+                                    <PlotlyChart
+                                        data={chart.livePlot.data}
+                                        layout={chart.livePlot.layout}
+                                        style={{ height: 200 }}
+                                        onPointClick={(point) => handleChartClick(chart.key, point)}
+                                    />
+                                </div>
+                                <div className="curve-monitor-mini-heading">Chg vs Prev Close</div>
+                                <div className="curve-monitor-chart-click-target" onClick={() => openFullscreen(chart)}>
+                                    <PlotlyChart
+                                        data={chart.changePlot.data}
+                                        layout={chart.changePlot.layout}
+                                        style={{ height: 118 }}
+                                        onPointClick={(point) => handleChartClick(chart.key, point)}
+                                    />
+                                </div>
+                                <div className="curve-monitor-live-ribbon">
+                                    <div className="curve-monitor-kpi">
+                                        <span>Live Avg</span>
+                                        <strong>{fmt(chart.liveSummary.avg)}</strong>
+                                    </div>
+                                    <div className="curve-monitor-kpi">
+                                        <span>Live Range</span>
+                                        <strong>{fmt(chart.liveSummary.min)} - {fmt(chart.liveSummary.max)}</strong>
+                                    </div>
+                                    <div className="curve-monitor-kpi">
+                                        <span>Up / Down</span>
+                                        <strong><span className="positive">{chart.liveSummary.upCount}</span> / <span className="negative">{chart.liveSummary.downCount}</span></strong>
+                                    </div>
+                                    <div className="curve-monitor-kpi">
+                                        <span>Tick Events</span>
+                                        <strong>{chart.liveSummary.tickCount}</strong>
+                                    </div>
+                                </div>
+                                <div className="curve-monitor-daily-summary">
+                                    <div className="curve-monitor-summary-title">Daily Change Summary</div>
+                                    <div className="curve-monitor-summary-grid">
+                                        <div className="curve-monitor-summary-item">
+                                            <span>Contracts</span>
+                                            <strong>{chart.summary.count}</strong>
+                                        </div>
+                                        <div className="curve-monitor-summary-item">
+                                            <span>Average</span>
+                                            <strong className={netClass(chart.summary.avg)}>{fmt(chart.summary.avg)}</strong>
+                                        </div>
+                                        <div className="curve-monitor-summary-item">
+                                            <span>Max</span>
+                                            <strong className={netClass(chart.summary.max)}>{fmt(chart.summary.max)}</strong>
+                                        </div>
+                                        <div className="curve-monitor-summary-item">
+                                            <span>Min</span>
+                                            <strong className={netClass(chart.summary.min)}>{fmt(chart.summary.min)}</strong>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div className="curve-monitor-detail-panel">
+                                    {selectedRows[chart.key] ? (
+                                        <>
+                                            <div className="curve-monitor-detail-title">
+                                                Selected Contract: {selectedRows[chart.key].name || '--'}
+                                            </div>
+                                            <table className="curve-monitor-table">
+                                                <thead>
+                                                    <tr>
+                                                        <th>Name</th>
+                                                        <th>Live Price</th>
+                                                        <th>Source</th>
+                                                        <th>Last Settled</th>
+                                                        <th>Daily Change</th>
+                                                        <th>Tick Delta</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody>
+                                                    <tr>
+                                                        <td>{selectedRows[chart.key].name || '--'}</td>
+                                                        <td className="live-price-cell">
+                                                            <span className={netClass(selectedRows[chart.key].net_change)}>{fmt(selectedRows[chart.key].live_price)}</span>
+                                                            {selectedRows[chart.key].tick_event && (
+                                                                <span className={`tick-icon ${selectedRows[chart.key].tick_direction === 'up' ? 'up' : 'down'}`} aria-hidden="true">
+                                                                    <TickArrowIcon direction={selectedRows[chart.key].tick_direction} />
+                                                                </span>
+                                                            )}
+                                                        </td>
+                                                        <td>{selectedRows[chart.key].has_live_price ? 'Live' : 'Settled'}</td>
+                                                        <td>{fmt(selectedRows[chart.key].last_settled)}</td>
+                                                        <td className={netClass(selectedRows[chart.key].net_change)}>{fmt(selectedRows[chart.key].net_change)}</td>
+                                                        <td className={netClass(selectedRows[chart.key].tick_delta)}>{fmt(selectedRows[chart.key].tick_delta)}</td>
+                                                    </tr>
+                                                </tbody>
+                                            </table>
+                                        </>
+                                    ) : (
+                                        <div className="curve-monitor-detail-empty">
+                                            Click a chart point to view that contract details.
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </>
+            )}
+            {fullscreenChart && (
+                <div className="curve-monitor-modal-overlay" onClick={closeFullscreen}>
+                    <div className="curve-monitor-modal" onClick={(e) => e.stopPropagation()}>
+                        <div className="curve-monitor-modal-header">
+                            <h3>{fullscreenChart.title}</h3>
+                            <button className="curve-monitor-modal-close" onClick={closeFullscreen}>✕</button>
+                        </div>
+                        <div className="curve-monitor-mini-heading">Live Price</div>
+                        <PlotlyChart
+                            data={fullscreenChart.livePlot.data}
+                            layout={{
+                                ...fullscreenChart.livePlot.layout,
+                                margin: { l: 56, r: 20, t: 14, b: 54 },
+                                xaxis: { ...(fullscreenChart.livePlot.layout.xaxis || {}), tickangle: -24, automargin: true },
+                            }}
+                            style={{ height: 360 }}
+                        />
+                        <div className="curve-monitor-mini-heading">Chg vs Prev Close</div>
+                        <PlotlyChart
+                            data={fullscreenChart.changePlot.data}
+                            layout={{
+                                ...fullscreenChart.changePlot.layout,
+                                margin: { l: 56, r: 20, t: 8, b: 54 },
+                                xaxis: { ...(fullscreenChart.changePlot.layout.xaxis || {}), tickangle: -24, automargin: true },
+                            }}
+                            style={{ height: 230 }}
+                        />
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+}
+
 // ─── Sidebar Component ────────────────────────────────────────
 function Sidebar({ params, setParams, collapsed, setCollapsed }) {
     const { isDark, toggleTheme } = useContext(ThemeContext);
@@ -742,7 +1327,7 @@ function Sidebar({ params, setParams, collapsed, setCollapsed }) {
         <aside className={`sidebar ${collapsed ? 'collapsed' : ''}`}>
             <div className="sidebar-brand">
                 <div className="icon">🛡️</div>
-                <h1>ARB TERMINAL</h1>
+                <h1>BRAZIL DASHBOARD</h1>
                 <p>Market Intelligence</p>
             </div>
 
@@ -823,6 +1408,7 @@ function App() {
         { label: '📊 24M Spreads', component: <SpreadStation tenor={24} params={params} /> },
         { label: '🦋 12M Fly', component: <FlyStation tenor={12} params={params} /> },
         { label: '🦋 24M Fly', component: <FlyStation tenor={24} params={params} /> },
+        { label: '📡 Curve Monitor', component: <CurveMonitorTab /> },
         { label: '📖 Guide', component: <GuideTab /> },
     ];
 
