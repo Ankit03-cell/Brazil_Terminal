@@ -1,5 +1,5 @@
 ---
-title: ARB Terminal
+title: Brazil Terminal
 emoji: 🛡️
 colorFrom: green
 colorTo: blue
@@ -8,7 +8,7 @@ pinned: false
 license: mit
 ---
 
-# ARB Financial Terminal
+# Brazil Financial Terminal
 
 Professional-grade financial terminal for Brazil DI spread and butterfly analysis.
 
