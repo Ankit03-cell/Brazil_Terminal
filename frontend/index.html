@@ -87,6 +87,16 @@ function flipSeriesSign(values) {
     return values.map(value => typeof value === 'number' ? -value : value);
 }
 
+const CONTRACT_MONTH_ORDER = { F: 1, G: 2, H: 3, J: 4, K: 5, M: 6, N: 7, Q: 8, U: 9, V: 10, X: 11, Z: 12 };
+
+function flyLabelSortKey(label) {
+    const m = String(label || '').match(/OD([FGHJKMNQUVXZ])(\d{2})/);
+    if (!m) return Number.MAX_SAFE_INTEGER;
+    const monthNum = CONTRACT_MONTH_ORDER[m[1]] || 99;
+    const year = 2000 + Number(m[2]);
+    return (year * 100) + monthNum;
+}
+
 // ─── Theme Context ────────────────────────────────────────────
 const ThemeContext = createContext();
 
@@ -191,7 +201,7 @@ function EChart({ option, style, className = '' }) {
     return <div ref={ref} className={`echart ${className}`.trim()} style={{ width: '100%', ...style }} />;
 }
 
-function ChartSurface({ eyebrow, title, note, compact = false, children }) {
+function ChartSurface({ eyebrow, title, note, actions = null, compact = false, children }) {
     return (
         <div className={`chart-surface ${compact ? 'compact' : ''}`}>
             {(eyebrow || title || note) && (
@@ -200,7 +210,10 @@ function ChartSurface({ eyebrow, title, note, compact = false, children }) {
                         {eyebrow && <div className="chart-eyebrow">{eyebrow}</div>}
                         {title && <div className="chart-surface-title">{title}</div>}
                     </div>
-                    {note && <div className="chart-surface-note">{note}</div>}
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 6 }}>
+                        {note && <div className="chart-surface-note">{note}</div>}
+                        {actions}
+                    </div>
                 </div>
             )}
             {children}
@@ -253,7 +266,7 @@ function buildCategoryLineOption({ categories, traces, c, yAxisName, zeroLine = 
         series: traces.map((trace, idx) => ({
             name: trace.name,
             type: 'line',
-            smooth: 0.32,
+            smooth: trace.smooth ?? 0.32,
             showSymbol: trace.showSymbol ?? (idx === traces.length - 1),
             symbol: trace.symbol || 'circle',
             symbolSize: trace.symbolSize ?? (idx === traces.length - 1 ? 7 : 4),
@@ -468,7 +481,7 @@ function DataTable({ data, columns, title }) {
 }
 
 // ─── SpreadStation Component ──────────────────────────────────
-function SpreadStation({ tenor, params }) {
+function SpreadStation({ tenor, params, showHistorySection = true }) {
     const [spreads, setSpreads] = useState(null);
     const [past, setPast] = useState(null);
     const [history, setHistory] = useState(null);
@@ -512,7 +525,7 @@ function SpreadStation({ tenor, params }) {
             .catch(console.error);
     }, [spreads?.date, params.date, pinnedCurves, tenor, showAll]);
 
-    if (loading) return <div className="loading-overlay"><div className="spinner" /> Loading spread data...</div>;
+    if (loading && !spreads?.data?.length) return <div className="loading-overlay"><div className="spinner" /> Loading spread data...</div>;
     if (!spreads?.data?.length) return <div className="loading-overlay">No data available for this date.</div>;
 
     // Curve traces
@@ -712,7 +725,7 @@ function SpreadStation({ tenor, params }) {
                 <DataTable data={stats?.data || []} columns={tableColumns} title="Spread Analysis Table" />
             </div>
 
-            <div className="terminal-card fade-in fade-in-3">
+            {showHistorySection && (<div className="terminal-card fade-in fade-in-3">
                 <div className="card-header">
                     <div className="card-title"><span className="accent">|</span> HISTORICAL {tenor}M TREND</div>
                     <div className="card-actions">
@@ -763,13 +776,13 @@ function SpreadStation({ tenor, params }) {
                 <ChartSurface eyebrow="Rolling History" title="Generic Trend" note={`Bucket ${histRank} • ${histMode === 'F' ? 'F-Only' : 'All Months'}`}>
                     <EChart option={spreadHistoryOption} style={{ height: 394 }} />
                 </ChartSurface>
-            </div>
+            </div>)}
         </div>
     );
 }
 
 // ─── FlyStation Component ─────────────────────────────────────
-function FlyStation({ tenor, params }) {
+function FlyStation({ tenor, params, showHistorySection = true }) {
     const [flies, setFlies] = useState(null);
     const [past, setPast] = useState(null);
     const [history, setHistory] = useState(null);
@@ -811,7 +824,7 @@ function FlyStation({ tenor, params }) {
             .catch(console.error);
     }, [flies?.date, params.date, pinnedCurves, tenor, showAll]);
 
-    if (loading) return <div className="loading-overlay"><div className="spinner" /> Loading fly data...</div>;
+    if (loading && !flies?.data?.length) return <div className="loading-overlay"><div className="spinner" /> Loading fly data...</div>;
     if (!flies?.data?.length) return <div className="loading-overlay">No fly data available.</div>;
 
     const curveTraces = [];
@@ -1018,7 +1031,7 @@ function FlyStation({ tenor, params }) {
                 </div>
             </div>
 
-            <div className="terminal-card fade-in fade-in-3">
+            {showHistorySection && (<div className="terminal-card fade-in fade-in-3">
                 <div className="card-header">
                     <div className="card-title"><span className="accent">|</span> HISTORICAL {tenor}M FLY TREND</div>
                     <div className="card-actions">
@@ -1068,7 +1081,7 @@ function FlyStation({ tenor, params }) {
                 <ChartSurface eyebrow="Rolling History" title="Historical Curvature" note={`Bucket ${histRank} • ${histMode === 'F' ? 'F-Only' : 'All Months'}`}>
                     <EChart option={flyHistoryOption} style={{ height: 394 }} />
                 </ChartSurface>
-            </div>
+            </div>)}
         </div>
     );
 }
@@ -1724,15 +1737,339 @@ function CurveMonitorTab() {
 }
 
 // ─── DVO1 Tab (Consolidated Analytics) ─────────────────────────
+function DVO1MergedHistory({ tenor, params }) {
+    const [kind, setKind] = useState('spread');
+    const [histMode, setHistMode] = useState('F');
+    const [histRank, setHistRank] = useState(1);
+    const [series, setSeries] = useState(null);
+    const [loading, setLoading] = useState(true);
+    const c = useChartTheme();
+
+    useEffect(() => {
+        setLoading(true);
+        const fn = kind === 'spread' ? api.spreadsHistory : api.fliesHistory;
+        fn(tenor, params.date, params.lookback, histRank, histMode)
+            .then(setSeries)
+            .catch(console.error)
+            .finally(() => setLoading(false));
+    }, [kind, tenor, params.date, params.lookback, histRank, histMode]);
+
+    const traces = [];
+    if (series?.data?.length) {
+        const dates = series.data.map(d => d.date);
+        const vals = series.data.map(d => d.value);
+        traces.push({
+            name: kind === 'spread' ? 'Spread' : 'Fly',
+            data: dates.map((x, i) => [x, vals[i]]),
+            lineStyle: { color: c.primary, width: 2.2 },
+            itemStyle: { color: c.primary },
+            areaStyle: { color: c.primaryFill },
+            showSymbol: false,
+        });
+        const b = series.bands || {};
+        if (b.ma_20) traces.push({ name: 'MA-20', data: dates.map((x, i) => [x, b.ma_20[i]]), lineStyle: { color: c.ma1, width: 1.5, type: 'dashed' }, itemStyle: { color: c.ma1 }, showSymbol: false });
+        if (b.ma_60) traces.push({ name: 'MA-60', data: dates.map((x, i) => [x, b.ma_60[i]]), lineStyle: { color: c.ma2, width: 1.5, type: 'dashed' }, itemStyle: { color: c.ma2 }, showSymbol: false });
+        if (b.upper_20) traces.push({ name: '+2σ', data: dates.map((x, i) => [x, b.upper_20[i]]), lineStyle: { color: c.ma1, width: 0.8 }, itemStyle: { color: c.ma1 }, showSymbol: false });
+        if (b.lower_20) traces.push({ name: '-2σ', data: dates.map((x, i) => [x, b.lower_20[i]]), lineStyle: { color: c.ma1, width: 0.8 }, itemStyle: { color: c.ma1 }, showSymbol: false });
+    }
+    if (series?.index?.length) {
+        traces.push({
+            name: 'Policy Rate',
+            data: series.index.map(d => [d.date, d.value]),
+            lineStyle: { color: c.overlay, width: 1.3, type: 'dashed' },
+            itemStyle: { color: c.overlay },
+            yAxisIndex: 1,
+            showSymbol: false,
+        });
+    }
+    const option = buildTimeSeriesOption({
+        c,
+        yAxisName: `${kind === 'spread' ? 'Spread' : 'Fly'} (bps)`,
+        overlayName: 'Policy Rate',
+        series: traces,
+    });
+
+    return (
+        <div className="terminal-card fade-in fade-in-3" style={{ marginTop: 16 }}>
+            <div className="card-header">
+                <div className="card-title"><span className="accent">|</span> HISTORICAL {tenor}M TREND</div>
+                <div className="card-actions">
+                    <div style={{ display: 'flex', background: 'rgba(0,0,0,0.5)', borderRadius: 4, overflow: 'hidden', border: `1px solid ${c.border}`, marginRight: 10 }}>
+                        <button className={`sub-tab-btn ${kind === 'spread' ? 'active' : ''}`} onClick={() => setKind('spread')} style={{padding: '4px 10px', fontSize: 10, border: 'none', background: 'none'}}>Spreads</button>
+                        <button className={`sub-tab-btn ${kind === 'fly' ? 'active' : ''}`} onClick={() => setKind('fly')} style={{padding: '4px 10px', fontSize: 10, border: 'none', background: 'none'}}>Flies</button>
+                    </div>
+                    <div className="control-group" style={{ marginRight: 10 }}>
+                        <select value={histMode} onChange={e => setHistMode(e.target.value)}>
+                            <option value="F">F-Only</option>
+                            <option value="all">All</option>
+                        </select>
+                    </div>
+                    <div className="control-group">
+                        <input type="number" min="1" max="50" value={histRank} onChange={e => setHistRank(Math.max(1, Number(e.target.value) || 1))} style={{width: 56}} />
+                    </div>
+                </div>
+            </div>
+            {loading ? (
+                <div style={{height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center'}}><div className="spinner" /></div>
+            ) : (
+                <ChartSurface eyebrow="Rolling History" title={`${kind === 'spread' ? 'Spread' : 'Fly'} History`} note={`Bucket ${histRank} • ${histMode === 'F' ? 'F-Only' : 'All Months'}`}>
+                    <EChart option={option} style={{ height: 394 }} />
+                </ChartSurface>
+            )}
+        </div>
+    );
+}
+
+function DVO1UnifiedCurves({ tenor, params }) {
+    const c = useChartTheme();
+    const [loading, setLoading] = useState(true);
+    const [showHistoryCurves, setShowHistoryCurves] = useState(false);
+    const [showAll, setShowAll] = useState(false);
+    const [contractWindow, setContractWindow] = useState(12);
+    const [spreadRes, setSpreadRes] = useState(null);
+    const [flyRes, setFlyRes] = useState(null);
+    const [spreadPast, setSpreadPast] = useState(null);
+    const [flyPast, setFlyPast] = useState(null);
+    const [pinnedSpreads, setPinnedSpreads] = useState([]);
+    const [pinnedFlies, setPinnedFlies] = useState([]);
+
+    useEffect(() => {
+        setLoading(true);
+        Promise.all([
+            api.spreads(tenor, params.date, showAll),
+            api.spreadsPast(tenor, params.date, params.n1, params.n2, params.n3, showAll),
+            api.flies(tenor, params.date, showAll),
+            api.fliesPast(tenor, params.date, params.n1, params.n2, params.n3, showAll),
+        ])
+            .then(([s, sp, f, fp]) => {
+                setSpreadRes(s);
+                setSpreadPast(sp);
+                setFlyRes(f);
+                setFlyPast(fp);
+            })
+            .catch(console.error)
+            .finally(() => setLoading(false));
+    }, [tenor, params.date, params.n1, params.n2, params.n3, showAll]);
+
+    if ((loading && (!spreadRes?.data?.length || !flyRes?.data?.length)) || !spreadRes?.data?.length || !flyRes?.data?.length) {
+        return <div className="terminal-card fade-in fade-in-2"><div style={{height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center'}}><div className="spinner" /></div></div>;
+    }
+
+    const spreadRows = spreadRes.data;
+    const flyRows = flyRes.data;
+    const spreadCount = spreadRows.length;
+    const flyCount = flyRows.length;
+    const visibleSpread = spreadCount > 0 ? Math.max(1, Math.min(contractWindow, spreadCount)) : 0;
+    const visibleFly = flyCount > 0 ? Math.max(1, Math.min(contractWindow, flyCount)) : 0;
+    const spreadSlice = spreadRows.slice(0, visibleSpread);
+    const flySlice = flyRows.slice(0, visibleFly);
+
+    const spreadTraces = [];
+    const flyTraces = [];
+    const getPinnedColor = (index) => {
+        const hue = (index * 47 + 22) % 360;
+        return `hsla(${hue}, 72%, 72%, 0.72)`;
+    };
+    if (showHistoryCurves) {
+        (spreadPast ? Object.entries(spreadPast) : []).forEach(([key, val], i) => {
+            if (!val.data?.length) return;
+            spreadTraces.push({
+                x: val.data.slice(0, visibleSpread).map(d => formatShortName(d.pair, true)),
+                y: val.data.slice(0, visibleSpread).map(d => d.value),
+                name: `${key.toUpperCase()} (${val.date})`,
+                line: { color: c.past[i % 3], width: 1.4, shape: 'linear' },
+                mode: 'lines',
+                smooth: false,
+            });
+        });
+        (flyPast ? Object.entries(flyPast) : []).forEach(([key, val], i) => {
+            if (!val.data?.length) return;
+            flyTraces.push({
+                x: val.data.slice(0, visibleFly).map(d => formatShortName(d.name, false)),
+                y: val.data.slice(0, visibleFly).map(d => d.value),
+                name: `${key.toUpperCase()} (${val.date})`,
+                line: { color: c.past[i % 3], width: 1.4, shape: 'linear' },
+                mode: 'lines',
+                smooth: false,
+            });
+        });
+    }
+    const activePinnedSpreads = pinnedSpreads
+        .filter(p => p.tenor === tenor && p.showAll === showAll)
+        .filter(p => p.date !== spreadRes?.date);
+    activePinnedSpreads.forEach((pinned, i) => {
+        const rows = pinned.data || [];
+        if (!rows.length) return;
+        spreadTraces.push({
+            x: spreadSlice.map(d => formatShortName(d.pair, true)),
+            y: spreadSlice.map((_, idx) => (idx < rows.length ? rows[idx].value : null)),
+            name: `Pinned ${i + 1} (${pinned.date})`,
+            mode: 'lines',
+            smooth: false,
+            line: { color: getPinnedColor(i), width: 1.6, shape: 'linear', dash: 'dashed' },
+            showSymbol: true,
+            symbol: 'circle',
+            symbolSize: 3,
+            connectNulls: false,
+        });
+    });
+    const activePinnedFlies = pinnedFlies
+        .filter(p => p.tenor === tenor && p.showAll === showAll)
+        .filter(p => p.date !== flyRes?.date);
+    activePinnedFlies.forEach((pinned, i) => {
+        const rows = pinned.data || [];
+        if (!rows.length) return;
+        flyTraces.push({
+            x: flySlice.map(d => formatShortName(d.name, false)),
+            y: flySlice.map((_, idx) => (idx < rows.length ? rows[idx].value : null)),
+            name: `Pinned ${i + 1} (${pinned.date})`,
+            mode: 'lines',
+            smooth: false,
+            line: { color: getPinnedColor(i), width: 1.6, shape: 'linear', dash: 'dashed' },
+            showSymbol: true,
+            symbol: 'circle',
+            symbolSize: 3,
+            connectNulls: false,
+        });
+    });
+    spreadTraces.push({
+        x: spreadSlice.map(d => formatShortName(d.pair, true)),
+        y: spreadSlice.map(d => d.value),
+        name: `Selected (${spreadRes.date})`,
+        mode: 'lines+markers',
+        smooth: false,
+        line: { color: c.primary, width: 3, shape: 'linear' },
+        marker: { size: 6, color: c.primary, line: { width: 1.5, color: c.panel } },
+    });
+    flyTraces.push({
+        x: flySlice.map(d => formatShortName(d.name, false)),
+        y: flySlice.map(d => d.value),
+        name: `Selected (${flyRes.date})`,
+        mode: 'lines+markers',
+        smooth: false,
+        line: { color: c.primary, width: 3, shape: 'linear' },
+        marker: { size: 6, color: c.primary, line: { width: 1.5, color: c.panel } },
+    });
+
+    const spreadOption = buildCategoryLineOption({
+        categories: spreadSlice.map(d => formatShortName(d.pair, true)),
+        traces: spreadTraces,
+        c,
+        yAxisName: 'Spread (bps)',
+        zeroLine: true,
+    });
+    const flyOption = buildCategoryLineOption({
+        categories: flySlice.map(d => formatShortName(d.name, false)),
+        traces: flyTraces,
+        c,
+        yAxisName: 'Fly (bps)',
+        zeroLine: true,
+    });
+    const isCurrentSpreadPinned = pinnedSpreads.some(p => p.date === (spreadRes?.date || params.date) && p.tenor === tenor && p.showAll === showAll);
+    const isCurrentFlyPinned = pinnedFlies.some(p => p.date === (flyRes?.date || params.date) && p.tenor === tenor && p.showAll === showAll);
+    const handlePinSpread = () => {
+        const targetDate = spreadRes?.date || params.date;
+        if (!targetDate || isCurrentSpreadPinned) return;
+        api.spreads(tenor, targetDate, showAll).then((res) => {
+            if (!res?.data?.length) return;
+            setPinnedSpreads(prev => [...prev, { date: res.date || targetDate, tenor, showAll, data: res.data }]);
+        }).catch(console.error);
+    };
+    const handlePinFly = () => {
+        const targetDate = flyRes?.date || params.date;
+        if (!targetDate || isCurrentFlyPinned) return;
+        api.flies(tenor, targetDate, showAll).then((res) => {
+            if (!res?.data?.length) return;
+            setPinnedFlies(prev => [...prev, { date: res.date || targetDate, tenor, showAll, data: res.data }]);
+        }).catch(console.error);
+    };
+
+    return (
+        <div className="terminal-card fade-in fade-in-2">
+            <div className="card-header">
+                <div className="card-title"><span className="accent">|</span> {tenor}M DVO1 CURVES</div>
+                <div className="card-actions">
+                    <label className="toggle-switch" style={{marginRight: 16}}>
+                        <input type="checkbox" checked={showHistoryCurves} onChange={e => setShowHistoryCurves(e.target.checked)} />
+                        <span className="toggle-track" />
+                        History
+                    </label>
+                    <label className="toggle-switch" style={{marginRight: 16}}>
+                        <input type="checkbox" checked={showAll} onChange={e => setShowAll(e.target.checked)} />
+                        <span className="toggle-track" />
+                        Show All
+                    </label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 190, marginRight: 10 }}>
+                        <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Contracts</span>
+                        <input type="range" min="1" max={Math.max(spreadCount, flyCount)} step="1" value={Math.max(1, Math.min(contractWindow, Math.max(spreadCount, flyCount)))} onChange={e => setContractWindow(Number(e.target.value))} style={{ width: 120 }} />
+                        <span style={{ fontSize: 11, color: 'var(--text-secondary)', minWidth: 42, textAlign: 'right' }}>{Math.min(visibleSpread, visibleFly)}/{Math.max(spreadCount, flyCount)}</span>
+                    </div>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)', marginRight: 10 }}>As of: {spreadRes?.date || params.date}</span>
+                </div>
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))', gap: 12 }}>
+                <ChartSurface
+                    eyebrow="DVO1 Spread Strip"
+                    title="Spread Curve"
+                    note={`${visibleSpread}/${spreadCount} visible nodes`}
+                    actions={
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <button className="btn-export" style={{ padding: '6px 10px', background: isCurrentSpreadPinned ? 'rgba(var(--accent-rgb), 0.18)' : undefined, borderColor: isCurrentSpreadPinned ? 'var(--accent)' : undefined, color: isCurrentSpreadPinned ? 'var(--text-accent)' : undefined }} onClick={handlePinSpread}>
+                                {isCurrentSpreadPinned ? 'Spread Pinned' : 'Pin Spread Graph'}
+                            </button>
+                            {activePinnedSpreads.length > 0 && <button className="btn-export" style={{ padding: '6px 10px' }} onClick={() => setPinnedSpreads(prev => prev.filter(p => !(p.tenor === tenor && p.showAll === showAll)))}>Clear Spread Pins</button>}
+                        </div>
+                    }
+                >
+                    <EChart option={spreadOption} style={{ height: 348 }} />
+                </ChartSurface>
+                <ChartSurface
+                    eyebrow="DVO1 Fly Strip"
+                    title="Fly Curve"
+                    note={`${visibleFly}/${flyCount} visible nodes`}
+                    actions={
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <button className="btn-export" style={{ padding: '6px 10px', background: isCurrentFlyPinned ? 'rgba(var(--accent-rgb), 0.18)' : undefined, borderColor: isCurrentFlyPinned ? 'var(--accent)' : undefined, color: isCurrentFlyPinned ? 'var(--text-accent)' : undefined }} onClick={handlePinFly}>
+                                {isCurrentFlyPinned ? 'Fly Pinned' : 'Pin Fly Graph'}
+                            </button>
+                            {activePinnedFlies.length > 0 && <button className="btn-export" style={{ padding: '6px 10px' }} onClick={() => setPinnedFlies(prev => prev.filter(p => !(p.tenor === tenor && p.showAll === showAll)))}>Clear Fly Pins</button>}
+                        </div>
+                    }
+                >
+                    <EChart option={flyOption} style={{ height: 348 }} />
+                </ChartSurface>
+            </div>
+        </div>
+    );
+}
+
+function DVO1TenorSection({ tenor, params }) {
+    return (
+        <div
+            style={{
+                display: 'grid',
+                gap: 16,
+                gridTemplateColumns: 'repeat(auto-fit, minmax(520px, 1fr))',
+                alignItems: 'start',
+            }}
+        >
+            <div style={{ gridColumn: '1 / -1' }}>
+                <DVO1UnifiedCurves tenor={tenor} params={params} />
+            </div>
+            <div style={{ gridColumn: '1 / -1' }}>
+                <DVO1MergedHistory tenor={tenor} params={params} />
+            </div>
+        </div>
+    );
+}
+
 function DVO1Tab({ params }) {
     const [subTab, setSubTab] = useState('monitor');
     
     const sections = [
         { id: 'monitor', label: '📡 Monitor', component: <CurveMonitorTab /> },
-        { id: 'spread12', label: '📈 12M Spreads', component: <SpreadStation tenor={12} params={params} /> },
-        { id: 'spread24', label: '📊 24M Spreads', component: <SpreadStation tenor={24} params={params} /> },
-        { id: 'fly12', label: '🦋 12M Fly', component: <FlyStation tenor={12} params={params} /> },
-        { id: 'fly24', label: '🦋 24M Fly', component: <FlyStation tenor={24} params={params} /> },
+        { id: 'tenor12', label: '📈 12M', component: <DVO1TenorSection tenor={12} params={params} /> },
+        { id: 'tenor24', label: '📊 24M', component: <DVO1TenorSection tenor={24} params={params} /> },
     ];
 
     return (
@@ -1760,8 +2097,11 @@ function FRATab({ params }) {
     const [fraData, setFraData] = useState(null);
     const [spreadCurve, setSpreadCurve] = useState(null);
     const [pastSpreadCurve, setPastSpreadCurve] = useState(null);
+    const [flyCurve, setFlyCurve] = useState(null);
+    const [pastFlyCurve, setPastFlyCurve] = useState(null);
     const [showHistoryCurves, setShowHistoryCurves] = useState(false);
-    const [pinnedCurves, setPinnedCurves] = useState([]);
+    const [pinnedSpreadCurves, setPinnedSpreadCurves] = useState([]);
+    const [pinnedFlyCurves, setPinnedFlyCurves] = useState([]);
     
     const [spreadHist, setSpreadHist] = useState(null);
     const [flyHist, setFlyHist] = useState(null);
@@ -1774,7 +2114,8 @@ function FRATab({ params }) {
     const [contractWindow, setContractWindow] = useState(12);
     
     // Separate toggles for Curve vs History
-    const [curveFOnly, setCurveFOnly] = useState(false);
+    const [curveFOnlySpread, setCurveFOnlySpread] = useState(false);
+    const [curveFOnlyFly, setCurveFOnlyFly] = useState(false);
     const [histFOnly, setHistFOnly] = useState(false);
     const [genericRank, setGenericRank] = useState(1); // 'All', 1, 2, 3...
     const c = useChartTheme();
@@ -1784,33 +2125,37 @@ function FRATab({ params }) {
         setLoadingCurve(true);
         Promise.all([
             api.fra(params.date),
-            api.fraSpreadsOnDate(activeTenor, curveFOnly, params.date),
-            api.fraSpreadsPast(activeTenor, curveFOnly, params.date, params.n1, params.n2, params.n3)
+            api.fraSpreadsOnDate(activeTenor, curveFOnlySpread, params.date),
+            api.fraSpreadsPast(activeTenor, curveFOnlySpread, params.date, params.n1, params.n2, params.n3),
+            api.fraSpreadsOnDate(activeTenor, curveFOnlyFly, params.date),
+            api.fraSpreadsPast(activeTenor, curveFOnlyFly, params.date, params.n1, params.n2, params.n3),
         ])
-        .then(([fraRes, spreadRes, pastRes]) => {
+        .then(([fraRes, spreadRes, pastRes, flyRes, pastFlyRes]) => {
             setFraData(fraRes);
             setSpreadCurve(spreadRes);
             setPastSpreadCurve(pastRes);
+            setFlyCurve(flyRes);
+            setPastFlyCurve(pastFlyRes);
         })
         .catch(console.error)
         .finally(() => setLoadingCurve(false));
-    }, [params.date, activeTenor, curveFOnly, params.n1, params.n2, params.n3]);
+    }, [params.date, activeTenor, curveFOnlySpread, curveFOnlyFly, params.n1, params.n2, params.n3]);
 
-    const handlePinCurrentCurve = useCallback(() => {
+    const handlePinCurrentSpreadCurve = useCallback(() => {
         const targetDate = spreadCurve?.date || params.date;
         if (!targetDate) return;
-        if (pinnedCurves.some(p => p.date === targetDate && p.tenor === activeTenor && p.fOnly === curveFOnly)) return;
+        if (pinnedSpreadCurves.some(p => p.date === targetDate && p.tenor === activeTenor && p.fOnly === curveFOnlySpread)) return;
 
-        api.fraSpreadsOnDate(activeTenor, curveFOnly, targetDate)
+        api.fraSpreadsOnDate(activeTenor, curveFOnlySpread, targetDate)
             .then((res) => {
                 if (!res?.data?.length) return;
-                setPinnedCurves(prev => ([
+                setPinnedSpreadCurves(prev => ([
                     ...prev,
-                    { date: res.date || targetDate, tenor: activeTenor, fOnly: curveFOnly, data: res.data }
+                    { date: res.date || targetDate, tenor: activeTenor, fOnly: curveFOnlySpread, data: res.data }
                 ]));
             })
             .catch(console.error);
-    }, [spreadCurve?.date, params.date, pinnedCurves, activeTenor, curveFOnly]);
+    }, [spreadCurve?.date, params.date, pinnedSpreadCurves, activeTenor, curveFOnlySpread]);
 
     // 2. Fetch Generic Histories
     useEffect(() => {
@@ -1832,15 +2177,21 @@ function FRATab({ params }) {
 
     // Spread curve data for upper graph
     const spreads = spreadCurve?.data || [];
+    const flySpreads = flyCurve?.data || [];
 
     // Short contract labels for spread curve
     const spotLabel = (c) => c.replace(' Comdty', '');
     const spreadLabel = (s) => `${spotLabel(s.leg1_front)}`;
 
-    // Invert sign and convert to bps
+    // Spread chart convention stays inverted.
     const displaySpreads = spreads.map(s => ({
         ...s,
-        display_value: -s.spread_value * 100
+        display_value: -s.spread_value * 100,
+    }));
+    const displayFlySpreads = flySpreads.map(s => ({
+        ...s,
+        display_value: -s.spread_value * 100,
+        fly_base: s.spread_value * 100,
     }));
 
     // KPIs based on spread values
@@ -1852,8 +2203,27 @@ function FRATab({ params }) {
     const chartSpreads = visibleNodeCount > 0 ? displaySpreads.slice(0, visibleNodeCount) : [];
     
     const validLabels = new Set(chartSpreads.map(s => spreadLabel(s)));
+
+    const buildFlyFromDisplaySpreads = (rows, tenorMonths) => {
+        // FRA fly for a tenor strip is built from consecutive spreads:
+        // Fly_i = Spread_i - Spread_{i+1}
+        const gap = 1;
+        const out = [];
+        for (let i = 0; i + gap < rows.length; i += 1) {
+            const s1 = rows[i];
+            const s2 = rows[i + gap];
+            const frontCode = spotLabel(s1.leg1_front || '');
+            out.push({
+                label: `${frontCode}${gap}`,
+                contract: frontCode,
+                fly_value: -((s1.fly_base ?? s1.display_value ?? 0) - (s2.fly_base ?? s2.display_value ?? 0)),
+            });
+        }
+        return out;
+    };
     
-    const traces = [];
+    const spreadTraces = [];
+    const flyTraces = [];
     
     // Add past curves if toggled
     if (showHistoryCurves && pastSpreadCurve) {
@@ -1866,24 +2236,46 @@ function FRATab({ params }) {
                         value: -s.spread_value * 100
                     }));
                 
-                traces.push({
+                spreadTraces.push({
                     x: mapped.map(s => s.label),
                     y: mapped.map(s => s.value),
                     name: `${key.toUpperCase()} (${val.date})`,
                     mode: 'lines',
-                    line: { color: c.past[i % 3], width: 1.5, shape: 'spline', smoothing: 0.72 },
+                    smooth: false,
+                    line: { color: c.past[i % 3], width: 1.5, shape: 'linear' },
                     hovertemplate: `<b>%{x}</b><br>${key.toUpperCase()} (${val.date}): <b>%{y:.1f} bps</b><extra></extra>`,
                 });
             }
         });
     }
+    if (showHistoryCurves && pastFlyCurve) {
+        Object.entries(pastFlyCurve).forEach(([key, val], i) => {
+            if (!val.data?.length) return;
+            const mappedDisplayRows = val.data.map((s) => ({
+                ...s,
+                display_value: -s.spread_value * 100,
+                fly_base: s.spread_value * 100,
+            }));
+            const pastFlies = buildFlyFromDisplaySpreads(mappedDisplayRows, activeTenor);
+            if (!pastFlies.length) return;
+            flyTraces.push({
+                x: pastFlies.map(f => f.label),
+                y: pastFlies.map(f => f.fly_value),
+                name: `${key.toUpperCase()} Fly (${val.date})`,
+                mode: 'lines',
+                smooth: false,
+                line: { color: c.past[i % 3], width: 1.2, dash: 'dashed', shape: 'linear' },
+                hovertemplate: `<b>%{x}</b><br>${key.toUpperCase()} Fly (${val.date}): <b>%{y:.1f} bps</b><extra></extra>`,
+            });
+        });
+    }
     
     // Add pinned curves (only for active tenor/filter and same x-axis contract universe)
-    const activePinned = pinnedCurves
-        .filter(p => p.tenor === activeTenor && p.fOnly === curveFOnly)
+    const activePinnedSpreads = pinnedSpreadCurves
+        .filter(p => p.tenor === activeTenor && p.fOnly === curveFOnlySpread)
         .filter(p => p.date !== spreadCurve?.date);
-    const isCurrentPinned = pinnedCurves.some(
-        p => p.date === (spreadCurve?.date || params.date) && p.tenor === activeTenor && p.fOnly === curveFOnly
+    const isCurrentSpreadPinned = pinnedSpreadCurves.some(
+        p => p.date === (spreadCurve?.date || params.date) && p.tenor === activeTenor && p.fOnly === curveFOnlySpread
     );
 
     const getPinnedColor = (index) => {
@@ -1891,7 +2283,7 @@ function FRATab({ params }) {
         return `hsla(${hue}, 72%, 72%, 0.72)`;
     };
 
-    activePinned.forEach((pinned, i) => {
+    activePinnedSpreads.forEach((pinned, i) => {
         const pinnedRows = pinned.data || [];
         if (!pinnedRows.length) return;
         const xSlots = chartSpreads.map(s => spreadLabel(s));
@@ -1902,19 +2294,21 @@ function FRATab({ params }) {
             idx < pinnedRows.length ? spotLabel(pinnedRows[idx].leg1_front) : null
         ));
 
-        traces.push({
+        spreadTraces.push({
             x: xSlots,
             y: yAligned,
             name: `Pinned ${i + 1} (${pinned.date})`,
             mode: 'lines',
+            smooth: false,
             showSymbol: true,
             symbol: 'circle',
             symbolSize: 3,
-            line: { color: getPinnedColor(i), width: 1.6, shape: 'spline', smoothing: 0.72, dash: 'dashed', opacity: 0.72 },
+            line: { color: getPinnedColor(i), width: 1.6, shape: 'linear', dash: 'dashed', opacity: 0.72 },
             connectNulls: false,
             customdata: pinnedContracts,
             hovertemplate: `<b>%{x}</b><br>Pinned ${i + 1} (${pinned.date}): <b>%{y:.1f} bps</b><br>Pinned Contract: %{customdata}<extra></extra>`,
         });
+
     });
 
     const spreadLineTrace = {
@@ -1922,26 +2316,107 @@ function FRATab({ params }) {
         y: chartSpreads.map(s => s.display_value),
         name: `Selected (${spreadCurve?.date})`,
         mode: 'lines+markers',
-        line: { color: c.primary, width: 3.25, shape: 'spline', smoothing: 0.72 },
+        smooth: false,
+        line: { color: c.primary, width: 3.25, shape: 'linear' },
         marker: { size: 7, color: c.primary, line: { width: 2, color: c.panel } },
         hovertemplate: `<b>%{x}</b><br>Selected (${spreadCurve?.date}): <b>%{y:.1f} bps</b><extra></extra>`,
     };
-    traces.push(spreadLineTrace);
+    spreadTraces.push(spreadLineTrace);
 
-    // Compute Y axis range with padding based on all traces
-    let allY = [];
-    traces.forEach(t => allY = allY.concat(t.y));
-    let sMin = allY.length ? Math.min(...allY) : -1;
-    let sMax = allY.length ? Math.max(...allY) : 1;
-    if (sMin === sMax) {
-        const pad = Math.max(Math.abs(sMax) * 0.02, 0.01);
-        sMin = sMin - pad;
-        sMax = sMax + pad;
-    } else {
-        const pad = (sMax - sMin) * 0.12;
-        sMin = sMin - pad;
-        sMax = sMax + pad;
+    const flyNodeCount = displayFlySpreads.length;
+    const flyVisibleNodeCount = flyNodeCount > 0 ? Math.max(1, Math.min(contractWindow, flyNodeCount)) : 0;
+    const chartFlySpreads = flyVisibleNodeCount > 0 ? displayFlySpreads.slice(0, flyVisibleNodeCount) : [];
+    const currentFlies = buildFlyFromDisplaySpreads(chartFlySpreads, activeTenor);
+
+    const activePinnedFlies = pinnedFlyCurves
+        .filter(p => p.tenor === activeTenor && p.fOnly === curveFOnlyFly)
+        .filter(p => p.date !== (flyCurve?.date || params.date));
+    const isCurrentFlyPinned = pinnedFlyCurves.some(
+        p => p.date === (flyCurve?.date || params.date) && p.tenor === activeTenor && p.fOnly === curveFOnlyFly
+    );
+
+    activePinnedFlies.forEach((pinned, i) => {
+        const pinnedSpreadRows = pinned.data || [];
+        if (!pinnedSpreadRows.length) return;
+        const pinnedDisplaySpreads = pinnedSpreadRows.map(s => ({
+            ...s,
+            display_value: -s.spread_value * 100,
+            fly_base: s.spread_value * 100,
+        }));
+        const flyRows = buildFlyFromDisplaySpreads(pinnedDisplaySpreads, activeTenor);
+        if (!flyRows.length) return;
+        const currentFlyLabels = currentFlies.map(f => f.label);
+        const alignedPinnedY = currentFlyLabels.map((_, idx) => (
+            idx < flyRows.length ? flyRows[idx].fly_value : null
+        ));
+        flyTraces.push({
+            x: currentFlyLabels,
+            y: alignedPinnedY,
+            name: `Pinned ${i + 1} (${pinned.date})`,
+            mode: 'lines',
+            smooth: false,
+            showSymbol: false,
+            line: { color: getPinnedColor(i), width: 1.5, shape: 'linear', dash: [4, 4], opacity: 0.72 },
+            connectNulls: false,
+            hovertemplate: `<b>%{x}</b><br>Pinned ${i + 1} (${pinned.date}): <b>%{y:.1f} bps</b><extra></extra>`,
+        });
+    });
+
+    if (currentFlies.length) {
+        flyTraces.push({
+            x: currentFlies.map(f => f.label),
+            y: currentFlies.map(f => f.fly_value),
+            name: `Selected (${flyCurve?.date || params.date})`,
+            mode: 'lines+markers',
+            smooth: false,
+            line: { color: c.primary, width: 3.0, dash: 'solid', shape: 'linear' },
+            marker: { size: 5, color: c.primary, line: { width: 1.2, color: c.panel } },
+            hovertemplate: `<b>%{x}</b><br>Selected (${flyCurve?.date || params.date}): <b>%{y:.1f} bps</b><extra></extra>`,
+        });
     }
+
+    const handlePinCurrentFlyCurve = () => {
+        const targetDate = flyCurve?.date || params.date;
+        if (!targetDate) return;
+        if (pinnedFlyCurves.some(p => p.date === targetDate && p.tenor === activeTenor && p.fOnly === curveFOnlyFly)) return;
+        api.fraSpreadsOnDate(activeTenor, curveFOnlyFly, targetDate)
+            .then((res) => {
+                if (!res?.data?.length) return;
+                setPinnedFlyCurves(prev => ([
+                    ...prev,
+                    { date: res.date || targetDate, tenor: activeTenor, fOnly: curveFOnlyFly, data: res.data }
+                ]));
+            })
+            .catch(console.error);
+    };
+
+    const calcYRange = (allSeries) => {
+        let allY = [];
+        allSeries.forEach(t => allY = allY.concat((t.y || []).filter(v => v != null)));
+        let minV = allY.length ? Math.min(...allY) : -1;
+        let maxV = allY.length ? Math.max(...allY) : 1;
+        if (minV === maxV) {
+            const pad = Math.max(Math.abs(maxV) * 0.02, 0.01);
+            minV -= pad;
+            maxV += pad;
+        } else {
+            const pad = (maxV - minV) * 0.12;
+            minV -= pad;
+            maxV += pad;
+        }
+        return { minV, maxV };
+    };
+    const spreadRange = calcYRange(spreadTraces);
+    const flyRange = calcYRange(flyTraces);
+    const flyCategories = currentFlies.map(f => f.label);
+    const alignedFlyTraces = flyTraces.map((t) => {
+        const vMap = new Map((t.x || []).map((x, i) => [x, (t.y || [])[i]]));
+        return {
+            ...t,
+            x: flyCategories,
+            y: flyCategories.map((x) => (vMap.has(x) ? vMap.get(x) : null)),
+        };
+    });
 
     // Generate historical Plotly traces
     const buildHistoryTraces = (dataArr) => {
@@ -1965,17 +2440,37 @@ function FRATab({ params }) {
 
     const fraSpreadOption = buildCategoryLineOption({
         categories: chartSpreads.map(s => spreadLabel(s)),
-        traces: traces,
+        traces: spreadTraces,
         c,
         yAxisName: 'FRA Spread (bps)',
         zeroLine: true,
-        min: sMin,
-        max: sMax,
+        min: spreadRange.minV,
+        max: spreadRange.maxV,
     });
     fraSpreadOption.yAxis.axisLabel.formatter = (value) => `${value >= 0 ? '+' : ''}${Number(value).toFixed(1)}`;
     fraSpreadOption.tooltip.valueFormatter = (value) => value == null ? '--' : `${Number(value).toFixed(1)} bps`;
     if (fraSpreadOption.series?.length) {
         fraSpreadOption.series[0].markLine = {
+            silent: true,
+            symbol: 'none',
+            lineStyle: { color: c.zeroLine, width: 1, type: 'dashed' },
+            data: [{ yAxis: 0 }]
+        };
+    }
+
+    const fraFlyOption = buildCategoryLineOption({
+        categories: flyCategories,
+        traces: alignedFlyTraces,
+        c,
+        yAxisName: 'FRA Fly (bps)',
+        zeroLine: true,
+        min: flyRange.minV,
+        max: flyRange.maxV,
+    });
+    fraFlyOption.yAxis.axisLabel.formatter = (value) => `${value >= 0 ? '+' : ''}${Number(value).toFixed(1)}`;
+    fraFlyOption.tooltip.valueFormatter = (value) => value == null ? '--' : `${Number(value).toFixed(1)} bps`;
+    if (fraFlyOption.series?.length) {
+        fraFlyOption.series[0].markLine = {
             silent: true,
             symbol: 'none',
             lineStyle: { color: c.zeroLine, width: 1, type: 'dashed' },
@@ -2023,11 +2518,11 @@ function FRATab({ params }) {
                 <MetricCard label="Min Spread" value={minSpread} prefix="" className="fade-in fade-in-4" />
             </div>
 
-            {/* First Graph: FRA Spread Curve */}
+            {/* First Graph Block: FRA Spread + Fly Curves */}
             <div className="terminal-card fade-in fade-in-2">
                 <div className="card-header">
                     <div className="card-title">
-                        <span className="accent">|</span> {activeTenor}M FRA SPREAD CURVE
+                        <span className="accent">|</span> {activeTenor}M FRA CURVES
                     </div>
                     <div className="card-actions">
                         <label className="toggle-switch" style={{marginRight: 16}}>
@@ -2035,34 +2530,6 @@ function FRATab({ params }) {
                             <span className="toggle-track" />
                             History
                         </label>
-                        <label className="toggle-switch" style={{marginRight: 16}}>
-                            <input type="checkbox" checked={curveFOnly} onChange={e => setCurveFOnly(e.target.checked)} />
-                            <span className="toggle-track" />
-                            F-Only
-                        </label>
-                        {spreadCurve?.date && (
-                            <button
-                                className="btn-export"
-                                style={{
-                                    padding: '8px 12px',
-                                    background: isCurrentPinned ? 'rgba(var(--accent-rgb), 0.18)' : undefined,
-                                    borderColor: isCurrentPinned ? 'var(--accent)' : undefined,
-                                    color: isCurrentPinned ? 'var(--text-accent)' : undefined
-                                }}
-                                onClick={handlePinCurrentCurve}
-                            >
-                                {isCurrentPinned ? 'Pinned' : 'Pin This Graph'}
-                            </button>
-                        )}
-                        {activePinned.length > 0 && (
-                            <button
-                                className="btn-export"
-                                style={{ padding: '8px 12px' }}
-                                onClick={() => setPinnedCurves(prev => prev.filter(p => !(p.tenor === activeTenor && p.fOnly === curveFOnly)))}
-                            >
-                                Clear Pins
-                            </button>
-                        )}
                         {countNodes > 0 && (
                             <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 190, marginRight: 10 }}>
                                 <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Contracts</span>
@@ -2084,35 +2551,133 @@ function FRATab({ params }) {
                     </div>
                 </div>
 
-                {loadingCurve ? (
+                {(loadingCurve && !spreads.length) ? (
                     <div style={{height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center'}}><div className="spinner" /></div>
                 ) : spreads.length > 0 ? (
-                    <ChartSurface eyebrow="FRA Spread Strip" title="Spread Curve" note={`${visibleNodeCount}/${countNodes} visible nodes`}>
-                        {activePinned.length > 0 && (
-                            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
-                                {activePinned.map((pin, idx) => (
-                                    <span
-                                        key={`${pin.tenor}-${pin.fOnly}-${pin.date}`}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(420px, 1fr))', gap: 12 }}>
+                        <ChartSurface
+                            eyebrow="FRA Spread Strip"
+                            title="Spread Curve"
+                            note={`${visibleNodeCount}/${countNodes} visible nodes`}
+                            actions={
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    {spreadCurve?.date && (
+                                        <button
+                                            className="btn-export"
+                                            style={{
+                                                padding: '6px 10px',
+                                                background: isCurrentSpreadPinned ? 'rgba(var(--accent-rgb), 0.18)' : undefined,
+                                                borderColor: isCurrentSpreadPinned ? 'var(--accent)' : undefined,
+                                                color: isCurrentSpreadPinned ? 'var(--text-accent)' : undefined
+                                            }}
+                                            onClick={handlePinCurrentSpreadCurve}
+                                        >
+                                            {isCurrentSpreadPinned ? 'Spread Pinned' : 'Pin Spread Graph'}
+                                        </button>
+                                    )}
+                                    {activePinnedSpreads.length > 0 && (
+                                        <button
+                                            className="btn-export"
+                                            style={{ padding: '6px 10px' }}
+                                            onClick={() => setPinnedSpreadCurves(prev => prev.filter(p => !(p.tenor === activeTenor && p.fOnly === curveFOnlySpread)))}
+                                        >
+                                            Clear Spread Pins
+                                        </button>
+                                    )}
+                                    <label className="toggle-switch">
+                                        <input type="checkbox" checked={curveFOnlySpread} onChange={e => setCurveFOnlySpread(e.target.checked)} />
+                                        <span className="toggle-track" />
+                                        F-Only
+                                    </label>
+                                </div>
+                            }
+                        >
+                            {activePinnedSpreads.length > 0 && (
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+                                    {activePinnedSpreads.map((pin, idx) => (
+                                        <span
+                                            key={`${pin.tenor}-${pin.fOnly}-${pin.date}`}
+                                            style={{
+                                                display: 'inline-flex',
+                                                alignItems: 'center',
+                                                gap: 6,
+                                                fontSize: 11,
+                                                color: 'var(--text-secondary)',
+                                                border: `1px solid ${c.border}`,
+                                                borderRadius: 999,
+                                                padding: '4px 10px',
+                                                background: 'rgba(0,0,0,0.22)'
+                                            }}
+                                        >
+                                            <span style={{ width: 8, height: 8, borderRadius: '50%', background: getPinnedColor(idx), display: 'inline-block' }} />
+                                            {`Pinned ${idx + 1}: ${pin.date}`}
+                                        </span>
+                                    ))}
+                                </div>
+                            )}
+                            <EChart option={fraSpreadOption} style={{ height: 348 }} />
+                        </ChartSurface>
+                        <ChartSurface
+                            eyebrow="FRA Fly Strip"
+                            title="Fly Curve"
+                            note={`${currentFlies.length} fly nodes`}
+                            actions={
+                                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                    <button
+                                        className="btn-export"
                                         style={{
-                                            display: 'inline-flex',
-                                            alignItems: 'center',
-                                            gap: 6,
-                                            fontSize: 11,
-                                            color: 'var(--text-secondary)',
-                                            border: `1px solid ${c.border}`,
-                                            borderRadius: 999,
-                                            padding: '4px 10px',
-                                            background: 'rgba(0,0,0,0.22)'
+                                            padding: '6px 10px',
+                                            background: isCurrentFlyPinned ? 'rgba(var(--accent-rgb), 0.18)' : undefined,
+                                            borderColor: isCurrentFlyPinned ? 'var(--accent)' : undefined,
+                                            color: isCurrentFlyPinned ? 'var(--text-accent)' : undefined
                                         }}
+                                        onClick={handlePinCurrentFlyCurve}
                                     >
-                                        <span style={{ width: 8, height: 8, borderRadius: '50%', background: getPinnedColor(idx), display: 'inline-block' }} />
-                                        {`Pinned ${idx + 1}: ${pin.date}`}
-                                    </span>
-                                ))}
-                            </div>
-                        )}
-                        <EChart option={fraSpreadOption} style={{ height: 348 }} />
-                    </ChartSurface>
+                                        {isCurrentFlyPinned ? 'Fly Pinned' : 'Pin Fly Graph'}
+                                    </button>
+                                    {activePinnedFlies.length > 0 && (
+                                        <button
+                                            className="btn-export"
+                                            style={{ padding: '6px 10px' }}
+                                            onClick={() => setPinnedFlyCurves(prev => prev.filter(p => !(p.tenor === activeTenor && p.fOnly === curveFOnlyFly)))}
+                                        >
+                                            Clear Fly Pins
+                                        </button>
+                                    )}
+                                    <label className="toggle-switch">
+                                        <input type="checkbox" checked={curveFOnlyFly} onChange={e => setCurveFOnlyFly(e.target.checked)} />
+                                        <span className="toggle-track" />
+                                        F-Only
+                                    </label>
+                                </div>
+                            }
+                        >
+                            {activePinnedFlies.length > 0 && (
+                                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+                                    {activePinnedFlies.map((pin, idx) => (
+                                        <span
+                                            key={`fly-${pin.tenor}-${pin.fOnly}-${pin.date}`}
+                                            style={{
+                                                display: 'inline-flex',
+                                                alignItems: 'center',
+                                                gap: 6,
+                                                fontSize: 11,
+                                                color: 'var(--text-secondary)',
+                                                border: `1px solid ${c.border}`,
+                                                borderRadius: 999,
+                                                padding: '4px 10px',
+                                                background: 'rgba(0,0,0,0.22)'
+                                            }}
+                                        >
+                                            <span style={{ width: 8, height: 8, borderRadius: '50%', background: getPinnedColor(idx), display: 'inline-block' }} />
+                                            {`Pinned Fly ${idx + 1}: ${pin.date}`}
+                                        </span>
+                                    ))}
+                                </div>
+                            )}
+                            <EChart option={fraFlyOption} style={{ height: 348 }} />
+                        </ChartSurface>
+                    </div>
                 ) : (
                     <div style={{height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-muted)'}}>
                         No FRA spread data found for this tenor/date.
@@ -2154,7 +2719,7 @@ function FRATab({ params }) {
                     </div>
                 </div>
                 
-                {loadingHist ? (
+                {(loadingHist && !((historyMode === 'spreads' ? spreadHist : flyHist)?.length)) ? (
                     <div style={{height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center'}}><div className="spinner" /></div>
                 ) : (
                     <ChartSurface eyebrow="Rolling History" title="Generic History" note={`${historyMode === 'spreads' ? 'Spreads' : 'Flies'} • ${genericRank === 'All' ? 'All generics' : `Generic ${genericRank}`}`}>
@@ -2172,13 +2737,40 @@ function FRATab({ params }) {
 function Sidebar({ params, setParams, collapsed, setCollapsed }) {
     const { isDark, toggleTheme } = useContext(ThemeContext);
     const [meta, setMeta] = useState(null);
+    const [draftDate, setDraftDate] = useState(params?.date || '');
 
     useEffect(() => { api.metadata().then(setMeta); }, []);
+    useEffect(() => { setDraftDate(params?.date || ''); }, [params?.date]);
+    useEffect(() => {
+        const maxDate = meta?.max_date ? toYMD(meta.max_date) : null;
+        if (!maxDate || !params?.date) return;
+        if (params.date > maxDate) {
+            setParams(p => ({ ...p, date: maxDate }));
+        }
+    }, [meta?.max_date, params?.date]);
 
     const presets = [
         { label: '1W', days: 7 }, { label: '1M', days: 30 }, { label: '3M', days: 90 },
         { label: '6M', days: 180 }, { label: '1Y', days: 365 }, { label: '2Y', days: 504 },
     ];
+
+    const shiftTargetDate = (unit, amount) => {
+        if (!params?.date) return;
+        const d = new Date(`${params.date}T00:00:00`);
+        if (Number.isNaN(d.getTime())) return;
+        if (unit === 'day') d.setDate(d.getDate() + amount);
+        if (unit === 'month') d.setMonth(d.getMonth() + amount);
+        if (meta?.max_date) {
+            const maxD = new Date(`${toYMD(meta.max_date)}T00:00:00`);
+            if (!Number.isNaN(maxD.getTime()) && d > maxD) d.setTime(maxD.getTime());
+        }
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        setParams(p => ({ ...p, date: `${yyyy}-${mm}-${dd}` }));
+    };
+    const maxDate = meta?.max_date ? toYMD(meta.max_date) : null;
+    const atMaxDate = !!(maxDate && params?.date && params.date >= maxDate);
 
     return (
         <>
@@ -2204,7 +2796,24 @@ function Sidebar({ params, setParams, collapsed, setCollapsed }) {
                         Today
                     </button>
                 </div>
-                <input type="date" value={params.date} onChange={e => setParams(p => ({...p, date: e.target.value}))} />
+                <input
+                    type="date"
+                    value={draftDate}
+                    max={meta?.max_date ? toYMD(meta.max_date) : undefined}
+                    onChange={e => setDraftDate(e.target.value)}
+                    onKeyDown={e => {
+                        if (e.key !== 'Enter') return;
+                        const selected = draftDate;
+                        const maxDate = meta?.max_date ? toYMD(meta.max_date) : null;
+                        setParams(p => ({ ...p, date: (maxDate && selected > maxDate) ? maxDate : selected }));
+                    }}
+                />
+                <div className="preset-row" style={{ marginTop: 8 }}>
+                    <button className="preset-btn" onClick={() => shiftTargetDate('day', -1)}>-1D</button>
+                    <button className="preset-btn" disabled={atMaxDate} onClick={() => shiftTargetDate('day', 1)}>+1D</button>
+                    <button className="preset-btn" onClick={() => shiftTargetDate('month', -1)}>-1M</button>
+                    <button className="preset-btn" disabled={atMaxDate} onClick={() => shiftTargetDate('month', 1)}>+1M</button>
+                </div>
             </div>
 
             <div className="sidebar-section">
@@ -2304,3 +2913,4 @@ ReactDOM.createRoot(document.getElementById('root')).render(<App />);
 </script>
 </body>
 </html>
+
